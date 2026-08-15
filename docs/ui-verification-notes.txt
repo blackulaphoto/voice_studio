@@ -1,0 +1,8 @@
+UI verification findings (2026-08-15):
+
+- The local React interface loaded successfully at http://127.0.0.1:5173 and connected to the FastAPI backend.
+- The Synthesize screen displayed the saved verification voice profile, 03-second cleaned reference duration, transcript-attached status, language selector, 1.00x speaking speed control, CPU-mode indicator, and local-inference privacy cue.
+- The synthesis button changed to the expected “Generating on your device…” state after it was clicked, confirming the UI submitted a live request to the local backend.
+- Visual design rendered as intended: dark desktop audio-studio layout, navigation rail, voice waveform, creation flow entry points, and a dedicated output panel.
+
+The UI-triggered generation completed successfully in CPU fallback mode. The output panel rendered the generated waveform, a functional native audio player, voice name, 64.93-second generation time, selected Qwen3-TTS Base model, 11-second audio duration, original text, and separate WAV and MP3 download controls. A completion notice confirmed that the output was generated locally and saved to the local generation library.

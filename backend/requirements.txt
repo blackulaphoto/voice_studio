@@ -1,0 +1,10 @@
+# Install a CUDA-matched PyTorch build separately when an NVIDIA GPU is available.
+torch>=2.6.0
+torchaudio>=2.6.0
+qwen-tts>=0.1.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.12
+pydantic-settings>=2.6.0
+soundfile>=0.12.1
+requests>=2.31.0
