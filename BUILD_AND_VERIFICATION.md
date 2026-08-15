@@ -1,52 +1,55 @@
-# Athena Voice Studio — Build and Verification Report
+# Build and verification ledger
 
-## Delivered application
+Updated 2026-08-15. This ledger reports only evidence produced from the current checkout.
 
-Athena Voice Studio is a Windows-ready, local React and FastAPI application for **authorized voice-profile creation** and **open-source voice-cloned speech synthesis**. The selected engine is Qwen3-TTS Base, using the practical `0.6B` model by default. It performs actual in-process local voice cloning; it does not call ElevenLabs, PlayHT, OpenAI TTS, or another hosted paid TTS provider.
+## Baseline audit
 
-The project includes a polished dark audio-studio interface, local FastAPI REST endpoints, Qwen model caching, FFmpeg preparation/export, SQLite metadata, local profile and generation storage, Windows setup and launch scripts, and setup/troubleshooting documentation.
+- The delivered folder had no Git metadata. Baseline commit `4eb3fe8` was created locally; the publishable branch is `main`.
+- The project had no `.venv`, no installed frontend packages, no automated tests, no checked-in benchmark data, and no quality samples.
+- Initial frontend build failed because Vite was not installed.
+- FFmpeg 7.1.1 and ffprobe were available. System Python was 3.11.9 and Node was 22.14.0.
+- Host inspection confirmed Windows 11, AMD Ryzen 7 5825U, 13.84 GB RAM, AMD integrated graphics, and no usable CUDA runtime. The verified runtime therefore uses official CPU PyTorch.
 
-| Capability | Result |
-|---|---|
-| Create an authorized voice profile | Implemented with required authorization acknowledgment, multi-file upload, browser microphone capture, source preservation, silence trimming, loudness normalization, resampling, preview, and local persistence. |
-| Generate cloned speech | Implemented through `Qwen3TTSModel.generate_voice_clone`, using a cached reusable clone prompt after first use. |
-| Voice library | Implemented with profile cards, prepared-reference waveform, preview, duration, creation date, source count, and deletion. |
-| Synthesis workspace | Implemented with voice selection, text entry, model-native language selection, pitch-preserving output speed, local generation status, waveform, player, metadata, WAV download, MP3 download, and regenerate action. |
-| Athena-facing API | Implemented with `GET /api/voices`, `POST /api/voices`, `DELETE /api/voices/{voice_id}`, `POST /api/tts`, and supporting health, preview, history, playback, and download routes. |
-| Device awareness | Implemented. CUDA is detected automatically; the interface identifies CUDA hardware and VRAM when available, otherwise shows CPU fallback. |
-| Windows handoff | Implemented with `setup.bat`, `setup_windows.ps1`, `start.bat`, `.env.example`, `requirements.txt`, and README instructions. |
+## Defects reproduced or confirmed by inspection
 
-## Verification performed
+- Default storage resolved to the parent of the project despite documentation showing project-local `storage/`.
+- SQLite foreign keys were enabled only in the schema script, not on each connection.
+- Voice deletion cascaded rows but left generation files/directories behind.
+- Multi-file references used a concat manifest with fragile quoting/escaping.
+- Generation history did not retain enough state for complete regeneration.
+- Qwen selected BF16 for all CPUs and all CUDA devices without capability checks.
+- The API had no engine/model capability endpoint, voice detail/update route, or generation delete route.
 
-The React application compiled successfully with Vite after implementation. Python source compilation also completed without errors. The backend, frontend, and real Qwen inference pipeline were run locally in the sandbox.
+## Current verification
 
-| Verification activity | Observed result |
-|---|---|
-| Local Qwen adapter | The selected Qwen3-TTS `0.6B` Base model was downloaded and loaded on CPU in bfloat16 mode. |
-| Real inference script | The saved verification script generated a local 24 kHz WAV through the implemented adapter. It wrote `actual-local-clone.wav` at 238,124 bytes. |
-| Authorized profile API | A profile was created through `POST /api/voices` with an authorized test reference, prepared successfully to a 2.67-second reference WAV, and persisted locally. |
-| Local Athena API | `POST /api/tts` produced a new local cloned WAV, returned metadata and API URLs, and persisted the generation. |
-| UI synthesis | The browser UI created a second local generation, then rendered the waveform, native audio player, generation time, model label, output duration, WAV button, and MP3 button. |
-| Download endpoints | Downloaded WAV was confirmed as 24 kHz mono PCM audio. Downloaded MP3 was confirmed as MPEG Layer III audio. Both endpoints returned the correct media type and attachment disposition. |
+| Category | Result | Scope |
+|---|---|---|
+| STATIC CHECK | Passed | `python -m compileall -q backend scripts` after current backend changes. |
+| UNIT TEST | Passed | 15 tests plus one separately marked real-inference test skipped by default. Coverage includes mixed audio, internal-pause preservation, database lifecycle, dtype selection, offline model-cache resolution, normalization, pronunciation, and segmentation. |
+| FRONTEND DEPENDENCIES | Passed | `npm install` completed with zero reported vulnerabilities. |
+| FRONTEND BUILD | Passed | Vite 8.2.1 transformed 16 modules and produced the production bundle. |
+| BACKEND API SMOKE | Passed | TestClient startup plus health, engines, models, voices, and generations all returned HTTP 200. |
+| UI DESIGN EVALUATION | Passed with fixes applied | Desktop/tablet/mobile review passed; mobile overflow/navigation and offline error-state priorities were subsequently corrected. Cross-provider evaluation was unavailable, so a separate OpenAI evaluator agent was used. |
+| INTEGRATION TEST | Passed manually | An authorized 55.59-second MP3 created the persisted `hillsry` profile and synthesized a new sentence through `POST /api/tts`. The opt-in pytest integration test remains skipped by default. |
+| REAL MODEL INFERENCE | Passed | Qwen3-TTS 0.6B loaded from the project-local cache with Hugging Face and Transformers explicitly offline, then produced WAV and MP3 output. |
+| MANUAL LISTENING TEST | Passed by user | The user listened to the newly synthesized clone and confirmed it sounded correct. |
+| PERFORMANCE BENCHMARK | Partial | Cold CPU model load: 188.65 s. Cached offline load: 22.4 s. A 3.28-second short sentence generated in 159.495 s (RTF 48.63). Full golden-suite benchmark remains pending. |
+| WINDOWS SETUP | Passed on target host | Dedicated Python 3.12.7 `.venv`, CPU PyTorch 2.13.0, Qwen3-TTS 0.1.1, FFmpeg 7.1.1, portable SoX 14.4.2, npm frontend, backend and frontend localhost services verified. |
 
-> The sandbox had no NVIDIA GPU and 3.8 GB of RAM. CPU fallback still completed real synthesis successfully, with roughly 65 seconds required for the displayed eleven-second output. A compatible NVIDIA GPU is strongly recommended for practical assistant latency.
+## Implemented in the current branch
 
-## Model rationale
+- Canonical project-local data root independent of current working directory.
+- Per-connection SQLite foreign keys and migration-safe metadata columns.
+- Explicit cascade-delete policy with associated generation-file cleanup.
+- Mixed-format FFmpeg filter-graph processing without concat manifests.
+- Local reference analysis metadata and actionable quality rating.
+- Engine interface and truthful Qwen capability reporting.
+- Hardware-safe FP32/FP16/BF16 selection and explicit unload/cache cleanup.
+- Complete generation request persistence for regeneration.
+- English text normalization, local pronunciation overrides, and long-text segmentation primitives.
+- Versioned golden voice test corpus and real-inference benchmark harness.
+- Separate engine/model licensing review.
 
-Qwen3-TTS Base was selected because its official API supports reference-audio-plus-transcript rapid voice cloning and a reusable clone-prompt object. Its `0.6B` and `1.7B` Base variants provide an explicit local-performance trade-off, while the project’s Apache-2.0 license supports a cleaner future deployment path than some alternatives.[1]
+## Not yet verified or complete
 
-F5-TTS, Coqui XTTS-v2, Fish Speech, and OpenVoice were evaluated before selection. The complete comparison, licensing considerations, and adapter rationale are recorded in [`docs/model-evaluation.md`](docs/model-evaluation.md).[1] [2] [3] [4] [5]
-
-## Handoff
-
-On Windows, run **`setup.bat`** once, then **`start.bat`**. Open `http://127.0.0.1:5173` when both local services launch. The first generation downloads and loads the chosen model; later requests reuse it while the application stays running.
-
-Use clear, single-speaker samples recorded in a quiet environment. The interface recommends 10–30 seconds even though the validated rapid-cloning path permits shorter clean references. Supply the exact reference transcript whenever possible, as this enables the engine’s full clone-prompt path. Only profiles for voices you own or have explicit permission to reproduce should be created.
-
-## References
-
-[1]: https://github.com/QwenLM/Qwen3-TTS "Qwen3-TTS official repository"
-[2]: https://github.com/SWivid/F5-TTS "F5-TTS official repository"
-[3]: https://huggingface.co/coqui/XTTS-v2 "Coqui XTTS-v2 model card"
-[4]: https://github.com/fishaudio/fish-speech "Fish Speech official repository"
-[5]: https://github.com/myshell-ai/OpenVoice "OpenVoice official repository"
+No model has won the bake-off. Chatterbox, F5-TTS, and Fish Speech are research candidates only. True streaming, cancellation during model inference, multi-reference selection by performance, ASR WER, speaker similarity scoring, batch synthesis, persisted A/B ratings, model downloads, and real listening quality remain incomplete until implemented and measured. Do not represent this branch as ElevenLabs-class or production-complete yet.

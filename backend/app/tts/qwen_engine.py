@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+import os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from .base import EngineCapabilities, TTSEngine
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+os.environ.setdefault("HF_HOME", str(PROJECT_ROOT / "storage" / "model-cache"))
+PROJECT_SOX_DIR = PROJECT_ROOT / "tools" / "sox" / "sox-14.4.2"
+if PROJECT_SOX_DIR.joinpath("sox.exe").is_file():
+    os.environ["PATH"] = f"{PROJECT_SOX_DIR}{os.pathsep}{os.environ.get('PATH', '')}"
 
 
 class EngineUnavailableError(RuntimeError):
@@ -18,7 +28,7 @@ class HardwareInfo:
     vram_total_mb: int | None
 
 
-class QwenVoiceCloneEngine:
+class QwenVoiceCloneEngine(TTSEngine):
     """Lazy, process-wide wrapper around Qwen3-TTS Base voice-cloning inference.
 
     The model stays resident after its first generation. Reusable prompt features are cached by
@@ -26,6 +36,8 @@ class QwenVoiceCloneEngine:
     """
 
     def __init__(self, model_id: str, force_device: str | None = None) -> None:
+        self.engine_id = "qwen3"
+        self.display_name = "Qwen3-TTS Base"
         self.model_id = model_id
         self.force_device = force_device
         self._model: Any | None = None
@@ -64,6 +76,39 @@ class QwenVoiceCloneEngine:
     def is_loaded(self) -> bool:
         return self._model is not None
 
+    def capabilities(self) -> EngineCapabilities:
+        return EngineCapabilities(
+            multilingual=True,
+            speed=True,
+            supported_languages=("English", "Chinese", "Japanese", "Korean", "German", "French", "Russian", "Portuguese", "Spanish", "Italian", "Auto"),
+        )
+
+    def _safe_dtype(self, torch: Any, hardware: HardwareInfo) -> Any:
+        if not hardware.accelerator_available:
+            return torch.float32
+        index = int(hardware.active_device.split(":")[1]) if ":" in hardware.active_device else 0
+        major, _minor = torch.cuda.get_device_capability(index)
+        return torch.bfloat16 if major >= 8 and torch.cuda.is_bf16_supported() else torch.float16
+
+    def _local_snapshot_path(self) -> Path | None:
+        repo_dir = (
+            Path(os.environ["HF_HOME"])
+            / "hub"
+            / f"models--{self.model_id.replace('/', '--')}"
+            / "snapshots"
+        )
+        for snapshot in sorted(repo_dir.glob("*"), reverse=True):
+            if (
+                snapshot.is_dir()
+                and snapshot.joinpath("config.json").is_file()
+                and snapshot.joinpath("model.safetensors").is_file()
+            ):
+                return snapshot.resolve()
+        return None
+
+    def _local_snapshot_available(self) -> bool:
+        return self._local_snapshot_path() is not None
+
     def load(self) -> None:
         with self._lock:
             if self._model is not None:
@@ -80,11 +125,17 @@ class QwenVoiceCloneEngine:
             # Qwen's Base weights are large enough that float32 CPU loading is needlessly
             # memory-intensive. bfloat16 keeps the local 0.6B fallback practical on modern
             # CPUs while CUDA uses the same memory-efficient dtype.
-            dtype = torch.bfloat16
+            dtype = self._safe_dtype(torch, hardware)
             kwargs: dict[str, Any] = {
                 "device_map": hardware.active_device,
                 "dtype": dtype,
             }
+            local_snapshot = self._local_snapshot_path()
+            if local_snapshot:
+                # Once a complete snapshot exists, normal synthesis is strictly local.
+                # This also prevents Hugging Face metadata probes from breaking an
+                # otherwise valid offline installation.
+                kwargs["local_files_only"] = True
             # FlashAttention is optional and only selected on CUDA because it is not portable to CPU.
             if hardware.accelerator_available:
                 try:
@@ -94,11 +145,25 @@ class QwenVoiceCloneEngine:
                 except ImportError:
                     pass
             try:
-                self._model = Qwen3TTSModel.from_pretrained(self.model_id, **kwargs)
+                model_source = str(local_snapshot) if local_snapshot else self.model_id
+                self._model = Qwen3TTSModel.from_pretrained(model_source, **kwargs)
             except Exception as exc:  # pass framework/model errors as actionable API detail
                 raise EngineUnavailableError(
                     f"Could not load local model '{self.model_id}' on {hardware.active_device}: {exc}"
                 ) from exc
+
+    def unload(self) -> None:
+        with self._lock:
+            self._model = None
+            self._prompt_cache.clear()
+            try:
+                import gc
+                import torch
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except ImportError:
+                pass
 
     def clear_prompt(self, voice_id: str) -> None:
         with self._lock:
@@ -127,6 +192,7 @@ class QwenVoiceCloneEngine:
         text: str,
         language: str,
         output_path: Path,
+        settings: dict[str, Any] | None = None,
     ) -> int:
         """Generate actual clone audio through the installed Qwen3-TTS Base model."""
         self.load()

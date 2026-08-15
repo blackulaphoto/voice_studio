@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -24,6 +24,16 @@ class VoiceProfile(BaseModel):
     updated_at: datetime
     preview_url: str
     original_sample_count: int
+    engine_id: str = "qwen3"
+    model_id: str | None = None
+    language: str = "English"
+    settings: dict[str, Any] = Field(default_factory=dict)
+
+
+class VoicePatchRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    language: str | None = None
+    settings: dict[str, Any] | None = None
 
 
 class VoiceListResponse(BaseModel):
@@ -53,6 +63,13 @@ class GenerationRequest(BaseModel):
         "Auto",
     ] = "English"
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    mode: Literal["quality", "fast"] = "quality"
+    engine_id: str = "qwen3"
+    performance: str | None = None
+    seed: int | None = None
+    normalize_text: bool = True
+    pronunciation_overrides: dict[str, str] = Field(default_factory=dict)
+    engine_settings: dict[str, Any] = Field(default_factory=dict)
 
 
 class GenerationResponse(BaseModel):
@@ -69,6 +86,13 @@ class GenerationResponse(BaseModel):
     audio_url: str
     wav_download_url: str
     mp3_download_url: str | None = None
+    normalized_text: str | None = None
+    engine_id: str = "qwen3"
+    mode: str = "quality"
+    performance: str | None = None
+    seed: int | None = None
+    settings: dict[str, Any] = Field(default_factory=dict)
+    reference_set: list[str] = Field(default_factory=list)
 
 
 class GenerationListResponse(BaseModel):
@@ -78,3 +102,15 @@ class GenerationListResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: Literal["ok"]
     device: DeviceInfo
+
+
+class EngineInfo(BaseModel):
+    id: str
+    name: str
+    model_id: str
+    loaded: bool
+    capabilities: dict
+
+
+class EngineListResponse(BaseModel):
+    engines: list[EngineInfo]

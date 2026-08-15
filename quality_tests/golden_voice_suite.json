@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "language": "en",
+  "cases": [
+    {"id": "conversation", "category": "normal", "text": "I thought about what you said last night, and I think you were probably right."},
+    {"id": "short-reaction", "category": "short", "text": "Wait. Seriously?"},
+    {"id": "warm", "category": "warm", "text": "Come here. Tell me what happened."},
+    {"id": "humor", "category": "humor", "text": "You have been awake for ten minutes and somehow we are already redesigning consciousness."},
+    {"id": "firm", "category": "firm", "text": "No. Stop. I am not agreeing to that."},
+    {"id": "hesitation", "category": "hesitation", "text": "I don't know... maybe. Give me a second."},
+    {"id": "numbers", "category": "normalization", "text": "Your appointment is August twenty-third at ten thirty-five in the morning."},
+    {"id": "currency", "category": "normalization", "text": "The total came to one hundred forty-seven dollars and sixty-two cents."},
+    {"id": "acronyms", "category": "pronunciation", "text": "The API is responding, but the GPU utilization still looks wrong."},
+    {"id": "questions", "category": "punctuation", "text": "Did you call her? Are you sure? Why would she leave now?"},
+    {"id": "exclamations", "category": "punctuation", "text": "I found it! This is exactly what we needed!"},
+    {"id": "parenthetical", "category": "punctuation", "text": "The second option (the quieter one) sounds much more natural."},
+    {"id": "rapid", "category": "cadence", "text": "Go. Turn left. Keep moving. Don't look back."},
+    {"id": "dialogue", "category": "dialogue", "text": "She said, \"I can explain.\" He answered, \"Then start talking.\""},
+    {"id": "intimate", "category": "quiet", "text": "You don't need to say anything. Just stay here for a minute."},
+    {"id": "excited", "category": "excited", "text": "We did it! I can't believe that actually worked!"},
+    {"id": "sarcastic", "category": "sarcastic", "text": "Oh, perfect. Another password reset. Exactly how I wanted to spend my morning."},
+    {"id": "long", "category": "long-form", "text": "By the time the rain stopped, the streetlights had already come on. The sidewalks reflected every window and passing car, and the whole neighborhood seemed quieter than usual. We walked home slowly, talking about small things, because neither of us was ready to end the evening."}
+  ]
+}

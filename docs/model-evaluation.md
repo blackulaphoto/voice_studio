@@ -1,46 +1,47 @@
-# Local Voice-Cloning Engine Evaluation
+# Local voice-cloning engine evaluation
 
-## Decision
+Updated 2026-08-15. This document deliberately separates source review from local measurement.
 
-Athena Voice Studio uses **Qwen3-TTS Base** as its concrete local inference engine. The default is `Qwen/Qwen3-TTS-12Hz-0.6B-Base` for the most practical first installation, with an environment-only upgrade path to `Qwen/Qwen3-TTS-12Hz-1.7B-Base` for a capable NVIDIA GPU. Both Base models support rapid voice cloning from a reference recording and transcript; the official API also supports building a reusable clone prompt, which this app caches per saved voice profile to avoid recomputing reference features on each Athena response.[1]
+## Current decision status
 
-> The selected engine runs **in-process** through its open-source Python package. It does not call a paid hosted TTS API, and the profile samples and generated output live in the configured local storage directory.
+No final quality or fast engine has been selected empirically on this checkout. Qwen3-TTS remains the only implemented adapter because it was inherited from the baseline and is needed to stabilize behavior before comparison. The prior document's selection language was stronger than its surviving evidence: the checkout contains no model environment, benchmark JSON, quality samples, authorized reference, or reproducible listening scores. Those claims are not treated as current proof.
 
-## Comparison
+The next valid decision requires real runs from `scripts/benchmark_engine.py`, the checked-in `quality_tests/golden_voice_suite.json`, saved audio under `quality_samples/`, and human listening ratings. Producing a WAV is not a quality decision.
 
-| Engine | Strengths for this application | Trade-off | Decision |
+## Candidate shortlist from current primary-source review
+
+| Candidate | Documented reason to measure | Principal question | Local result |
 |---|---|---|---|
-| **Qwen3-TTS Base** | Current Apache-2.0 project; rapid voice cloning from reference audio plus transcript; reusable clone-prompt API; 0.6B and 1.7B variants; English and nine other major languages.[1] | Newer stack and CPU fallback is substantially slower than CUDA. | **Selected.** Strong fit for a persistent assistant because the same prompt representation can be reused across many outputs. |
-| F5-TTS v1 Base | Maintained project with chunk inference, a direct CLI reference-audio workflow, CUDA installation guidance, and strong reported GPU throughput.[2] | The public pretrained model license is CC-BY-NC even though the code is MIT, making it a poor default where future commercial use is possible.[2] | Not the default. Keep it as a future adapter option if licensing is appropriate for the deployment. |
-| Coqui XTTS-v2 | Mature, simple local API; short reference clip workflow; multilingual voice cloning and style transfer through cloning.[3] | The model is under the Coqui Public Model License rather than a permissive open-source model license.[3] | Not the default. A viable technical fallback only after a separate license review. |
-| Fish Speech S2 | Actively self-hostable with short-reference voice cloning and expressive speech capabilities.[4] | Larger practical hardware footprint and a more demanding deployment path for a first Windows-local implementation. | Not selected for the initial build. |
-| OpenVoice V2 | Lightweight and MIT-licensed; useful for tone-color conversion.[5] | Not the strongest single-engine fit for natural, long-form direct text-to-voice cloning in the requested assistant workflow. | Useful future secondary engine, not the primary engine. |
+| Qwen3-TTS Base 0.6B / 1.7B | Official reference-audio plus transcript cloning, reusable clone prompt, multilingual models, Apache-2.0 repository. | Does identity and long-form stability justify its load/latency on the target hardware? | Not run in this checkout. |
+| Chatterbox Standard | English zero-shot cloning with CFG/exaggeration-style controls. | Does it outperform Qwen on identity and expressive delivery without instability? | Not run. |
+| Chatterbox Turbo 350M | Official project positions it for low-latency English, with `[laugh]` and related documented paralinguistic tags. | Is short-response quality and identity strong enough for FAST mode? | Not run. |
+| Chatterbox Nano 110M | Official project describes CPU-oriented operation. | Is the quality/identity trade-off acceptable on a Windows CPU-only system? | Not run. |
+| Chatterbox Multilingual V3 500M | Official project reports 23+ languages, improved similarity, fewer hallucinations, and natural conversational speech. | Are cross-language identity and memory costs better than Qwen? | Not run. |
+| F5-TTS v1 Base | Mature reference-audio workflow and published deployment/RTF information. | Does measured quality offset weight-license constraints and integration complexity? | Not run. |
+| Fish Speech S2 | Official technical report describes expressive multilingual streaming with published RTF and sub-100ms first audio. | Do local weights, license, Windows install, VRAM, and actual cloning quality fit this product? | Not run. |
 
-## Implemented Architecture
+Source claims are not benchmark results. See [licensing.md](licensing.md) and official sources: [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS), [Chatterbox](https://github.com/resemble-ai/chatterbox), [F5-TTS](https://github.com/SWivid/F5-TTS), [Fish Speech](https://github.com/fishaudio/fish-speech), and the [Fish Audio S2 technical report](https://arxiv.org/abs/2603.08823).
 
-| Layer | Implementation | Reason |
-|---|---|---|
-| User interface | React + Vite | A desktop-oriented local browser experience with voice library, synthesis focus, generations, recording, playback, waveform visualization, and downloads. |
-| API | FastAPI | Provides stable Athena-ready endpoints and isolates the frontend from model implementation details. |
-| Inference | `Qwen3TTSModel.generate_voice_clone` | Uses actual local model inference from the Qwen package rather than placeholder audio or a cloud service.[1] |
-| Prompt reuse | `create_voice_clone_prompt` cache | Preserves a processed reference representation in RAM after first generation for consistent successive responses.[1] |
-| Audio processing | FFmpeg | Preserves originals, creates a mono 24 kHz normalized/trimmed reference WAV, measures duration, exports MP3, and applies pitch-preserving speed changes. |
-| Storage | Local files + SQLite | Stores original samples, prepared prompts, WAV/MP3 output, and profile/generation metadata on the local machine. |
+## Required evaluation protocol
 
-## Control Surface
+1. Pin engine package, repository commit, model revision, torch build, device, driver, FFmpeg version, and OS.
+2. Use the same authorized reference set and exact transcripts. Preserve originals.
+3. Run every golden case at least three seeded repetitions where seed control exists.
+4. Run cold load, warm generation, 10-word, 30-word, 100-word, and 500-word cases.
+5. Record model load, completed-file first-audio latency (or true streamed latency), total generation time, audio duration, RTF, RAM delta, peak VRAM, failure, artifact, and hallucination counts.
+6. Run local ASR WER and speaker-embedding similarity only as supporting metrics.
+7. Conduct blind listening ratings for speaker similarity, naturalness, emotion, pronunciation, and overall quality.
+8. Retain one quality engine and one fast engine only if each has a measured advantage. Remove adapters that do not.
 
-The selected clone API documents `text`, `language`, reference audio, reference transcript, and clone prompt inputs.[1] Accordingly, Athena Voice Studio exposes only the controls it implements: **language** passes through to Qwen3-TTS, and **speaking speed** is applied locally with FFmpeg’s pitch-preserving `atempo` filter. Temperature, pitch, seed, and unsupported emotion sliders are deliberately not shown.
+## Control mapping for the current adapter
 
-The reference transcript is recommended. Qwen’s documented clone workflow accepts a reference transcript for the reference audio; the app allows embedding-only fallback when no transcript is supplied, while warning users that it may reduce cloning fidelity.[1]
+Qwen's current adapter truthfully reports language and post-generation pitch-preserving speed. It reports no temperature, seed, emotion, style, paralinguistic tags, or true streaming. The UI must render from this capability response. Future adapters must document parameter-to-control mappings rather than borrowing product names from another service.
 
-## Operational Notes
+## Hardware recorded for this audit
 
-The selected 0.6B Base model is a reasonable Windows-first local baseline. It automatically downloads when loaded by the Qwen package, according to the official project documentation.[1] CUDA is auto-detected at application startup. The interface shows the active device and keeps the loaded model resident after first use. CPU operation is supported as a fallback but is expected to be markedly slower; a CUDA-capable NVIDIA GPU is the recommended production configuration.
+- Windows host; OS/CPU/RAM CIM queries were denied by the sandbox account.
+- `nvidia-smi` was unavailable, so no NVIDIA GPU or VRAM result is confirmed.
+- Project virtual environment and model weights were absent.
+- FFmpeg 7.1.1 and system Python 3.11.9 were available.
 
-## References
-
-[1]: https://github.com/QwenLM/Qwen3-TTS "Qwen3-TTS official repository"
-[2]: https://github.com/SWivid/F5-TTS "F5-TTS official repository"
-[3]: https://huggingface.co/coqui/XTTS-v2 "Coqui XTTS-v2 model card"
-[4]: https://github.com/fishaudio/fish-speech "Fish Speech official repository"
-[5]: https://github.com/myshell-ai/OpenVoice "OpenVoice official repository"
+Accordingly, no real inference, listening, or performance conclusion is reported in this audit yet.

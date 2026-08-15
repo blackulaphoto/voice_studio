@@ -1,0 +1,15 @@
+.venv/
+frontend/node_modules/
+frontend/dist/
+storage/
+quality_samples/**/*.wav
+quality_samples/**/*.mp3
+quality_samples/**/*.flac
+quality_samples/**/*.ogg
+__pycache__/
+.pytest_cache/
+*.pyc
+.env
+tools/downloads/
+tools/sox/**/wget.exe
+tools/sox/**/wget.ini

@@ -16,12 +16,14 @@ from .config import get_settings
 from .db import (
     create_generation,
     create_voice,
+    delete_generation,
     delete_voice,
     get_generation,
     get_voice,
     init_db,
     list_generations,
     list_voices,
+    update_voice,
 )
 from .schemas import (
     DeviceInfo,
@@ -29,10 +31,14 @@ from .schemas import (
     GenerationRequest,
     GenerationResponse,
     HealthResponse,
+    EngineInfo,
+    EngineListResponse,
     VoiceCreatedResponse,
     VoiceListResponse,
     VoiceProfile,
+    VoicePatchRequest,
 )
+from .text.normalization import normalize_text
 from .tts.qwen_engine import EngineUnavailableError, QwenVoiceCloneEngine
 
 settings = get_settings()
@@ -76,6 +82,10 @@ def _voice_response(voice: dict) -> VoiceProfile:
         updated_at=datetime.fromisoformat(voice["updated_at"]),
         preview_url=f"{settings.api_prefix}/voices/{voice['id']}/preview",
         original_sample_count=len(voice["original_sample_paths"]),
+        engine_id=voice.get("engine_id", "qwen3"),
+        model_id=voice.get("model_id"),
+        language=voice.get("language", "English"),
+        settings=voice.get("settings", {}),
     )
 
 
@@ -98,6 +108,13 @@ def _generation_response(generation: dict) -> GenerationResponse:
             if generation["mp3_path"]
             else None
         ),
+        normalized_text=generation.get("normalized_text"),
+        engine_id=generation.get("engine_id", "qwen3"),
+        mode=generation.get("mode", "quality"),
+        performance=generation.get("performance"),
+        seed=generation.get("seed"),
+        settings=generation.get("settings", {}),
+        reference_set=generation.get("reference_set", []),
     )
 
 
@@ -123,9 +140,41 @@ def health() -> HealthResponse:
     return HealthResponse(status="ok", device=_device_info())
 
 
+@app.get(f"{settings.api_prefix}/engines", response_model=EngineListResponse)
+def get_engines() -> EngineListResponse:
+    return EngineListResponse(engines=[EngineInfo(
+        id=engine.engine_id,
+        name=engine.display_name,
+        model_id=engine.model_id,
+        loaded=engine.is_loaded,
+        capabilities=engine.capabilities().to_dict(),
+    )])
+
+
+@app.get(f"{settings.api_prefix}/models", response_model=EngineListResponse)
+def get_models() -> EngineListResponse:
+    return get_engines()
+
+
 @app.get(f"{settings.api_prefix}/voices", response_model=VoiceListResponse)
 def get_voices() -> VoiceListResponse:
     return VoiceListResponse(voices=[_voice_response(voice) for voice in list_voices()], device=_device_info())
+
+
+@app.get(f"{settings.api_prefix}/voices/{{voice_id}}", response_model=VoiceProfile)
+def get_voice_profile(voice_id: str) -> VoiceProfile:
+    voice = get_voice(voice_id)
+    if voice is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Voice profile not found.")
+    return _voice_response(voice)
+
+
+@app.patch(f"{settings.api_prefix}/voices/{{voice_id}}", response_model=VoiceProfile)
+def patch_voice_profile(voice_id: str, payload: VoicePatchRequest) -> VoiceProfile:
+    voice = update_voice(voice_id, name=payload.name, language=payload.language, settings=payload.settings)
+    if voice is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Voice profile not found.")
+    return _voice_response(voice)
 
 
 @app.post(f"{settings.api_prefix}/voices", response_model=VoiceCreatedResponse, status_code=status.HTTP_201_CREATED)
@@ -192,6 +241,7 @@ def post_voice(
             original_sample_paths=originals,
             reference_text=(reference_text or "").strip() or None,
             duration_seconds=total_duration,
+            model_id=settings.qwen_model_id,
         )
         return VoiceCreatedResponse(
             voice=_voice_response(voice),
@@ -225,10 +275,13 @@ def preview_voice(voice_id: str) -> FileResponse:
 
 @app.delete(f"{settings.api_prefix}/voices/{{voice_id}}", status_code=status.HTTP_204_NO_CONTENT)
 def remove_voice(voice_id: str) -> None:
-    voice = delete_voice(voice_id)
-    if voice is None:
+    deleted = delete_voice(voice_id)
+    if deleted is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Voice profile not found.")
+    voice, generations = deleted
     engine.clear_prompt(voice_id)
+    for generation in generations:
+        shutil.rmtree(settings.generations_dir / generation["id"], ignore_errors=True)
     shutil.rmtree(settings.voices_dir / voice_id, ignore_errors=True)
     shutil.rmtree(settings.samples_dir / voice_id, ignore_errors=True)
 
@@ -244,14 +297,18 @@ def synthesize(payload: GenerationRequest) -> GenerationResponse:
     wav_path = generation_dir / "speech.wav"
     mp3_path = generation_dir / "speech.mp3"
     started = time.perf_counter()
+    if payload.engine_id != engine.engine_id:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Engine '{payload.engine_id}' is not installed.")
+    spoken_text = normalize_text(payload.text.strip(), payload.pronunciation_overrides) if payload.normalize_text else payload.text.strip()
     try:
         engine.synthesize(
             voice_id=voice["id"],
             reference_audio=Path(voice["reference_audio_path"]),
             reference_text=voice["reference_text"],
-            text=payload.text.strip(),
+            text=spoken_text,
             language=payload.language,
             output_path=wav_path,
+            settings=payload.engine_settings,
         )
         time_stretch(wav_path, payload.speed)
         exported_mp3 = export_mp3(wav_path, mp3_path)
@@ -269,6 +326,13 @@ def synthesize(payload: GenerationRequest) -> GenerationResponse:
             generation_seconds=elapsed,
             wav_path=wav_path,
             mp3_path=mp3_path if exported_mp3 else None,
+            normalized_text=spoken_text,
+            engine_id=payload.engine_id,
+            mode=payload.mode,
+            performance=payload.performance,
+            seed=payload.seed,
+            settings={"speed": payload.speed, **payload.engine_settings},
+            reference_set=list(voice["original_sample_paths"]),
         )
         return _generation_response(generation)
     except (EngineUnavailableError, AudioProcessingError) as exc:
@@ -282,6 +346,14 @@ def synthesize(payload: GenerationRequest) -> GenerationResponse:
 @app.get(f"{settings.api_prefix}/generations", response_model=GenerationListResponse)
 def get_generations() -> GenerationListResponse:
     return GenerationListResponse(generations=[_generation_response(item) for item in list_generations()])
+
+
+@app.get(f"{settings.api_prefix}/generations/{{generation_id}}", response_model=GenerationResponse)
+def get_generation_detail(generation_id: str) -> GenerationResponse:
+    generation = get_generation(generation_id)
+    if generation is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Generation not found.")
+    return _generation_response(generation)
 
 
 @app.get(f"{settings.api_prefix}/generations/{{generation_id}}/audio")
@@ -302,3 +374,11 @@ def download_generation(generation_id: str, format_name: str) -> FileResponse:
     path = _path_for_record(generation["wav_path"] if format_name == "wav" else generation["mp3_path"])
     media_type = "audio/wav" if format_name == "wav" else "audio/mpeg"
     return FileResponse(path, media_type=media_type, filename=f"athena-{generation_id}.{format_name}")
+
+
+@app.delete(f"{settings.api_prefix}/generations/{{generation_id}}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_generation(generation_id: str) -> None:
+    generation = delete_generation(generation_id)
+    if generation is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Generation not found.")
+    shutil.rmtree(settings.generations_dir / generation_id, ignore_errors=True)

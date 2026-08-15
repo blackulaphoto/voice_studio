@@ -2,327 +2,117 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./styles.css";
 
 const API = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000/api";
-const LANGUAGE_OPTIONS = [
-  "English",
-  "Auto",
-  "Chinese",
-  "Japanese",
-  "Korean",
-  "German",
-  "French",
-  "Russian",
-  "Portuguese",
-  "Spanish",
-  "Italian",
-];
-
-function formatTime(seconds) {
-  if (!Number.isFinite(seconds)) return "—";
-  const minutes = Math.floor(seconds / 60);
-  const remainder = Math.round(seconds % 60).toString().padStart(2, "0");
-  return minutes ? `${minutes}:${remainder}` : `${remainder}s`;
-}
-
-function formatDate(value) {
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(new Date(value));
-}
-
-function apiUrl(path) {
-  return `${API}${path}`;
-}
-
-function assetUrl(path) {
-  return path.startsWith("http") ? path : `${new URL(API).origin}${path}`;
-}
+const FALLBACK_LANGUAGES = ["English", "Auto", "Chinese", "Japanese", "Korean", "German", "French", "Russian", "Portuguese", "Spanish", "Italian"];
+const apiUrl = path => `${API}${path}`;
+const assetUrl = path => path?.startsWith("http") ? path : `${new URL(API).origin}${path}`;
+const formatDate = value => new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(new Date(value));
+const formatTime = seconds => Number.isFinite(seconds) ? (seconds >= 60 ? `${Math.floor(seconds / 60)}:${Math.round(seconds % 60).toString().padStart(2, "0")}` : `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`) : "—";
 
 function Icon({ name, size = 18 }) {
-  const common = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true };
-  const icons = {
-    wave: <><path d="M2 12h2l2-7 4 14 3-10 2 6 2-3h3" /></>,
-    library: <><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5z" /><path d="M4 5.5v16" /></>,
-    microphone: <><rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v4M8 22h8" /></>,
-    history: <><path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v5h5M12 7v5l3 2" /></>,
-    settings: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.64 2.64-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.02 1.56v.1h-3.74v-.1a1.7 1.7 0 0 0-1.02-1.56 1.7 1.7 0 0 0-1.88.34l-.06.06-2.64-2.64.06-.06A1.7 1.7 0 0 0 5.2 15 1.7 1.7 0 0 0 3.64 14H3.5v-3.74h.14A1.7 1.7 0 0 0 5.2 9.24a1.7 1.7 0 0 0-.34-1.88L4.8 7.3l2.64-2.64.06.06a1.7 1.7 0 0 0 1.88.34 1.7 1.7 0 0 0 1.02-1.56v-.1h3.74v.1a1.7 1.7 0 0 0 1.02 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.64 2.64-.06.06a1.7 1.7 0 0 0-.34 1.88 1.7 1.7 0 0 0 1.56 1.02h.1V14h-.1A1.7 1.7 0 0 0 19.4 15Z" /></>,
-    plus: <><path d="M12 5v14M5 12h14" /></>,
-    upload: <><path d="M12 16V3M7 8l5-5 5 5M5 21h14" /></>,
-    play: <><path d="m8 5 11 7-11 7z" /></>,
-    trash: <><path d="M4 7h16M10 11v6M14 11v6M9 7l1-3h4l1 3M6 7l1 14h10l1-14" /></>,
-    download: <><path d="M12 3v12M7 10l5 5 5-5M5 21h14" /></>,
-    chevron: <><path d="m6 9 6 6 6-6" /></>,
-    close: <><path d="m6 6 12 12M18 6 6 18" /></>,
-    refresh: <><path d="M20 11a8.1 8.1 0 0 0-14.9-3L3 10M4 5v5h5M4 13a8.1 8.1 0 0 0 14.9 3L21 14M20 19v-5h-5" /></>,
-    cpu: <><rect x="6" y="6" width="12" height="12" rx="1" /><path d="M9 1v5M15 1v5M9 18v5M15 18v5M1 9h5M1 15h5M18 9h5M18 15h5" /></>,
-    check: <><path d="m5 12 4.5 4.5L19 7" /></>,
-    warning: <><path d="M10.3 3.7 2.7 17a2 2 0 0 0 1.7 3h15.2a2 2 0 0 0 1.7-3L13.7 3.7a2 2 0 0 0-3.4 0Z" /><path d="M12 9v4M12 17h.01" /></>,
+  const paths = {
+    wave: <path d="M2 12h2l2-7 4 14 3-10 2 6 2-3h3"/>, voices: <><path d="M9 18V5l10-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/></>, mic: <><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4M8 22h8"/></>, history: <><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5M12 7v5l3 2"/></>, compare: <><path d="M8 4 3 9l5 5M3 9h14M16 20l5-5-5-5M21 15H7"/></>, lab: <><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.8 3h10.4a2 2 0 0 0 1.8-3l-5-9V3"/><path d="M7 16h10"/></>, settings: <><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.5-2.4 1A7 7 0 0 0 15 6l-.3-2.5h-4L10.5 6A7 7 0 0 0 9 7L6.6 6 4.5 9.5l2 1.5a7 7 0 0 0 0 2l-2 1.5L6.6 18 9 17a7 7 0 0 0 1.5 1l.2 2.5h4L15 18a7 7 0 0 0 1.5-1l2.4 1 2.1-3.5-2-1.5a7 7 0 0 0 .1-1Z"/></>, plus: <path d="M12 5v14M5 12h14"/>, play: <path d="m8 5 11 7-11 7z"/>, trash: <><path d="M4 7h16M10 11v6M14 11v6M9 7l1-3h4l1 3M6 7l1 14h10l1-14"/></>, download: <><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></>, refresh: <><path d="M20 11a8 8 0 0 0-15-3l-2 2M4 5v5h5M4 13a8 8 0 0 0 15 3l2-2M20 19v-5h-5"/></>, cpu: <><rect x="6" y="6" width="12" height="12" rx="1"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></>, close: <path d="m6 6 12 12M18 6 6 18"/>, upload: <><path d="M12 16V3M7 8l5-5 5 5M5 21h14"/></>, check: <path d="m5 12 4 4L19 7"/>, warning: <><path d="M12 3 2 20h20Z"/><path d="M12 9v4M12 17h.01"/></>, search: <><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></>
   };
-  return <svg {...common}>{icons[name] || icons.wave}</svg>;
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name] || paths.wave}</svg>;
 }
 
-function Waveform({ src, compact = false }) {
-  const canvasRef = useRef(null);
-  useEffect(() => {
-    let active = true;
-    const paint = async () => {
-      if (!src || !canvasRef.current) return;
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext("2d");
-      const rect = canvas.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = rect.width * dpr;
-      canvas.height = rect.height * dpr;
-      ctx.scale(dpr, dpr);
-      const width = rect.width;
-      const height = rect.height;
-      ctx.clearRect(0, 0, width, height);
-      try {
-        const response = await fetch(src);
-        const data = await response.arrayBuffer();
-        const audio = new AudioContext();
-        const buffer = await audio.decodeAudioData(data);
-        await audio.close();
-        if (!active) return;
-        const samples = Math.max(42, Math.floor(width / (compact ? 3.5 : 2.8)));
-        const raw = buffer.getChannelData(0);
-        const step = Math.max(1, Math.floor(raw.length / samples));
-        const middle = height / 2;
-        ctx.lineWidth = compact ? 1.35 : 1.7;
-        ctx.strokeStyle = "#9a8cff";
-        ctx.globalAlpha = 0.9;
-        for (let index = 0; index < samples; index += 1) {
-          let peak = 0;
-          const start = index * step;
-          for (let offset = 0; offset < step && start + offset < raw.length; offset += 1) peak = Math.max(peak, Math.abs(raw[start + offset]));
-          const x = (index / samples) * width;
-          const amplitude = Math.max(compact ? 2 : 3, peak * height * 0.82);
-          ctx.beginPath();
-          ctx.moveTo(x, middle - amplitude / 2);
-          ctx.lineTo(x, middle + amplitude / 2);
-          ctx.stroke();
-        }
-        ctx.globalAlpha = 1;
-      } catch {
-        ctx.strokeStyle = "#6a6981";
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        for (let x = 0; x < width; x += 3) {
-          const y = height / 2 + Math.sin(x / 11) * 3;
-          if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-        }
-        ctx.stroke();
-      }
-    };
-    paint();
-    return () => { active = false; };
-  }, [src, compact]);
-  return <canvas className={`waveform ${compact ? "waveform-compact" : ""}`} ref={canvasRef} />;
+function Waveform({ compact = false }) {
+  const heights = [18,34,52,29,65,42,74,48,26,57,81,44,69,32,55,75,38,63,28,47,71,40,59,24,51,67,36,77,45,61,31,53,72,39,58,22,49,64,35,70,43,56,27,46,62,33,54,41];
+  return <div className={`waveform ${compact ? "compact" : ""}`} aria-hidden="true">{heights.map((height, index) => <i key={index} style={{ height: `${height}%`, animationDelay: `${index * -31}ms` }} />)}</div>;
 }
 
 function App() {
-  const [page, setPage] = useState("synthesize");
-  const [voices, setVoices] = useState([]);
-  const [generations, setGenerations] = useState([]);
-  const [device, setDevice] = useState(null);
-  const [selectedVoice, setSelectedVoice] = useState("");
-  const [text, setText] = useState("Good morning. I’ve mapped your day, protected the room you need to think, and kept the next step beautifully simple.");
-  const [language, setLanguage] = useState("English");
-  const [speed, setSpeed] = useState(1);
-  const [output, setOutput] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [notice, setNotice] = useState(null);
-  const [voiceDialogOpen, setVoiceDialogOpen] = useState(false);
-
+  const [page, setPage] = useState("synthesize"), [voices, setVoices] = useState([]), [generations, setGenerations] = useState([]);
+  const [engines, setEngines] = useState([]), [device, setDevice] = useState(null), [selectedVoice, setSelectedVoice] = useState("");
+  const [draft, setDraft] = useState({ text: "", language: "English", speed: 1, engine_id: "qwen3", mode: "quality", performance: null, seed: null, normalize_text: true, engine_settings: {} });
+  const [output, setOutput] = useState(null), [loading, setLoading] = useState(true), [generating, setGenerating] = useState(false), [notice, setNotice] = useState(null), [dialog, setDialog] = useState(false);
   const refresh = useCallback(async () => {
-    try {
-      const [voicesResponse, generationsResponse, healthResponse] = await Promise.all([
-        fetch(apiUrl("/voices")),
-        fetch(apiUrl("/generations")),
-        fetch(apiUrl("/health")),
-      ]);
-      if (!voicesResponse.ok) throw new Error("Unable to reach the local voice service.");
-      const voicePayload = await voicesResponse.json();
-      const generationPayload = await generationsResponse.json();
-      const healthPayload = await healthResponse.json();
-      setVoices(voicePayload.voices);
-      setGenerations(generationPayload.generations);
-      setDevice(healthPayload.device);
-      setSelectedVoice(current => current || voicePayload.voices[0]?.id || "");
-    } catch (error) {
-      setNotice({ type: "error", message: error.message || "Unable to connect to the local service." });
-    }
-  }, []);
-
-  useEffect(() => { refresh(); }, [refresh]);
-
-  const selectedVoiceProfile = useMemo(() => voices.find(voice => voice.id === selectedVoice), [selectedVoice, voices]);
-
-  async function generate() {
-    if (!selectedVoice || !text.trim()) {
-      setNotice({ type: "error", message: "Choose a voice and enter text before generating." });
-      return;
-    }
     setLoading(true);
-    setNotice(null);
     try {
-      const response = await fetch(apiUrl("/tts"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ voice_id: selectedVoice, text: text.trim(), language, speed: Number(speed) }),
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.detail || "Speech generation failed.");
-      setOutput(payload);
-      setGenerations(items => [payload, ...items]);
-      setPage("synthesize");
-      setNotice({ type: "success", message: "Speech generated locally and saved to your library." });
+      const responses = await Promise.all(["/voices", "/generations", "/health", "/engines"].map(path => fetch(apiUrl(path))));
+      if (responses.some(response => !response.ok)) throw new Error("The local voice service did not return a complete status response.");
+      const [voiceData, generationData, healthData, engineData] = await Promise.all(responses.map(response => response.json()));
+      setVoices(voiceData.voices); setGenerations(generationData.generations); setDevice(healthData.device); setEngines(engineData.engines);
+      setSelectedVoice(current => current || voiceData.voices[0]?.id || "");
+      setDraft(current => ({ ...current, engine_id: engineData.engines[0]?.id || current.engine_id }));
     } catch (error) {
-      setNotice({ type: "error", message: error.message || "Speech generation failed." });
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function deleteVoice(voice) {
-    if (!window.confirm(`Delete the “${voice.name}” profile and its source samples?`)) return;
+      const networkFailure = error instanceof TypeError || /failed to fetch|network/i.test(error.message || "");
+      setNotice(networkFailure
+        ? { type: "error", message: "Local engine unavailable. Start Athena’s local service, then retry.", detail: error.message, retry: true }
+        : { type: "error", message: error.message || "Athena could not read the local studio state.", retry: true });
+    } finally { setLoading(false); }
+  }, []);
+  useEffect(() => { refresh(); }, [refresh]);
+  const engine = engines.find(item => item.id === draft.engine_id) || engines[0];
+  const capability = engine?.capabilities || {};
+  const voice = voices.find(item => item.id === selectedVoice);
+  const restore = item => {
+    setSelectedVoice(item.voice_id);
+    setDraft({ text: item.text, language: item.language, speed: item.speed, engine_id: item.engine_id, mode: item.mode, performance: item.performance, seed: item.seed, normalize_text: item.settings?.normalize_text ?? true, engine_settings: item.settings || {} });
+    setOutput(item); setPage("synthesize");
+  };
+  const generate = async (record = null) => {
+    const source = record ? { voice_id: record.voice_id, text: record.text, language: record.language, speed: record.speed, engine_id: record.engine_id, mode: record.mode, performance: record.performance, seed: record.seed, normalize_text: record.settings?.normalize_text ?? true, engine_settings: record.settings || {} } : { voice_id: selectedVoice, ...draft };
+    if (!source.voice_id || !source.text.trim()) return setNotice({ type: "error", message: "Choose a voice and enter text before generating." });
+    setGenerating(true); setNotice(null);
     try {
-      const response = await fetch(apiUrl(`/voices/${voice.id}`), { method: "DELETE" });
-      if (!response.ok) throw new Error("Unable to delete the voice profile.");
-      setVoices(items => items.filter(item => item.id !== voice.id));
-      if (voice.id === selectedVoice) setSelectedVoice(voices.find(item => item.id !== voice.id)?.id || "");
-      setNotice({ type: "success", message: "Voice profile removed from local storage." });
-    } catch (error) {
-      setNotice({ type: "error", message: error.message });
-    }
-  }
-
-  const navItems = [
-    ["library", "Voice Library", "library"],
-    ["microphone", "Synthesize", "synthesize"],
-    ["history", "Generations", "generations"],
-    ["settings", "Settings", "settings"],
-  ];
-
-  return (
-    <main className="app-shell">
-      <aside className="sidebar">
-        <div className="brand"><span className="brand-mark"><Icon name="wave" size={22} /></span><span>ATHENA</span></div>
-        <p className="brand-subtitle">VOICE STUDIO</p>
-        <nav className="nav-list" aria-label="Application sections">
-          {navItems.map(([icon, label, key]) => <button key={key} className={`nav-item ${page === key ? "active" : ""}`} onClick={() => setPage(key)}><Icon name={icon} /><span>{label}</span></button>)}
-        </nav>
-        <div className="sidebar-bottom">
-          <div className="local-badge"><span className="status-dot" /><span>Local inference</span></div>
-          <p>All voice files remain on this device.</p>
-        </div>
-      </aside>
-
-      <section className="workspace">
-        <header className="topbar">
-          <div><p className="eyebrow">{page === "synthesize" ? "CREATE / SYNTHESIZE" : page.toUpperCase()}</p><h1>{page === "synthesize" ? "Make it sound like you." : page === "library" ? "Your Voice Library" : page === "generations" ? "Generation History" : "Local Engine Settings"}</h1></div>
-          <div className="topbar-actions">
-            {device && <div className="device-pill" title={device.gpu_name || "CPU-only inference"}><Icon name="cpu" size={15} />{device.accelerator_available ? `${device.gpu_name} · ${device.vram_total_mb} MB` : "CPU mode"}</div>}
-            <button className="primary-button compact" onClick={() => setVoiceDialogOpen(true)}><Icon name="plus" />New Voice</button>
-          </div>
-        </header>
-
-        {notice && <div className={`notice ${notice.type}`}><Icon name={notice.type === "success" ? "check" : "warning"} /><span>{notice.message}</span><button onClick={() => setNotice(null)} aria-label="Dismiss"><Icon name="close" size={15} /></button></div>}
-
-        {page === "synthesize" && <SynthesizePage voices={voices} selectedVoice={selectedVoice} setSelectedVoice={setSelectedVoice} selectedVoiceProfile={selectedVoiceProfile} text={text} setText={setText} language={language} setLanguage={setLanguage} speed={speed} setSpeed={setSpeed} output={output} loading={loading} onGenerate={generate} onNewVoice={() => setVoiceDialogOpen(true)} />}
-        {page === "library" && <VoiceLibrary voices={voices} onNewVoice={() => setVoiceDialogOpen(true)} onDelete={deleteVoice} />}
-        {page === "generations" && <GenerationList generations={generations} onSelect={item => { setOutput(item); setPage("synthesize"); }} />}
-        {page === "settings" && <SettingsPanel device={device} />}
-      </section>
-
-      {voiceDialogOpen && <CreateVoiceDialog onClose={() => setVoiceDialogOpen(false)} onCreated={(voice) => { setVoices(items => [voice, ...items]); setSelectedVoice(voice.id); setVoiceDialogOpen(false); setPage("library"); setNotice({ type: "success", message: "Voice profile created and ready to synthesize." }); }} />}
-    </main>
-  );
+      const response = await fetch(apiUrl("/tts"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(source) });
+      const payload = await response.json(); if (!response.ok) throw new Error(payload.detail || "Speech generation failed.");
+      setOutput(payload); setGenerations(items => [payload, ...items]); restore(payload); setNotice({ type: "success", message: "Take rendered locally and saved to Generations." });
+    } catch (error) { setNotice({ type: "error", message: error.message }); } finally { setGenerating(false); }
+  };
+  const removeVoice = async item => { if (!confirm(`Delete “${item.name}” and all of its generations?`)) return; const response = await fetch(apiUrl(`/voices/${item.id}`), { method: "DELETE" }); if (response.ok) { setVoices(items => items.filter(v => v.id !== item.id)); setGenerations(items => items.filter(g => g.voice_id !== item.id)); setSelectedVoice(current => current === item.id ? "" : current); } };
+  const removeGeneration = async item => { if (!confirm("Delete this generated take from local storage?")) return; const response = await fetch(apiUrl(`/generations/${item.id}`), { method: "DELETE" }); if (response.ok) { setGenerations(items => items.filter(g => g.id !== item.id)); if (output?.id === item.id) setOutput(null); } };
+  const nav = [["voices","Voices","voices"],["mic","Synthesize","synthesize"],["history","Generations","generations"],["compare","Compare","compare"],["lab","Quality Lab","quality"],["settings","Settings","settings"]];
+  const titles = { voices: ["Voice cabinet", "Authorized reference profiles"], synthesize: ["Synthesize", "Shape a new performance"], generations: ["Generations", "Your local listening library"], compare: ["Compare", "Listen without guessing"], quality: ["Quality Lab", "Measure before you trust"], settings: ["Settings", "Local engine room"] };
+  return <div className="app-shell">
+    <aside className="rail"><div className="brand"><span><Icon name="wave"/></span><div>ATHENA<small>VOICE STUDIO</small></div></div><nav aria-label="Studio sections">{nav.map(([icon,label,key]) => <button key={key} className={page === key ? "active" : ""} onClick={() => setPage(key)}><Icon name={icon}/><span>{label}</span></button>)}</nav><div className="local-status"><i/><div><strong>LOCAL / OFFLINE</strong><span>{device?.active_device || "checking device"}</span></div></div></aside>
+    <main className="workspace"><header className="topbar"><div><p>{titles[page][0]}</p><h1>{titles[page][1]}</h1></div><div className="rack-status"><span>ENGINE</span><b>{engine?.name || "Not detected"}</b><i className={engine ? "on" : ""}/></div></header>
+      {notice && <div className={`notice ${notice.type}`}><Icon name={notice.type === "success" ? "check" : "warning"}/><div><span>{notice.message}</span>{notice.detail && <details><summary>Technical detail</summary><code>{notice.detail}</code></details>}</div>{notice.retry && <button className="retry" onClick={refresh} disabled={loading}><Icon name="refresh"/>{loading ? "Checking…" : "Retry"}</button>}<button onClick={() => setNotice(null)} aria-label="Dismiss"><Icon name="close"/></button></div>}
+      {loading ? <LoadingState/> : <>
+        {page === "synthesize" && (
+          <Synthesize voices={voices} voice={voice} selectedVoice={selectedVoice} setSelectedVoice={setSelectedVoice} draft={draft} setDraft={setDraft} engine={engine} capability={capability} output={output} generating={generating} generate={generate} onNew={() => setDialog(true)} onCompare={() => setPage("compare")}/>
+        )}
+        {page === "voices" && <Voices voices={voices} onNew={() => setDialog(true)} onDelete={removeVoice}/>}
+        {page === "generations" && <Generations items={generations} voices={voices} onRestore={restore} onRegenerate={generate} onDelete={removeGeneration}/>}
+        {page === "compare" && <Compare items={generations} voices={voices}/>}
+        {page === "quality" && <QualityLab engine={engine}/>}
+        {page === "settings" && <Settings engines={engines} device={device}/>}
+      </>}
+    </main>{dialog && <CreateVoice onClose={() => setDialog(false)} onCreated={item => { setVoices(items => [item,...items]); setSelectedVoice(item.id); setDialog(false); setPage("voices"); }}/>}</div>;
 }
 
-function SynthesizePage({ voices, selectedVoice, setSelectedVoice, selectedVoiceProfile, text, setText, language, setLanguage, speed, setSpeed, output, loading, onGenerate, onNewVoice }) {
-  return <div className="synthesize-grid">
-    <section className="synth-card panel">
-      <div className="section-heading"><div><p className="section-kicker">VOICE PROFILE</p><h2>Who’s speaking?</h2></div><button className="text-button" onClick={onNewVoice}><Icon name="plus" size={16} />Create Voice</button></div>
-      {voices.length ? <label className="select-wrap"><select value={selectedVoice} onChange={event => setSelectedVoice(event.target.value)}>{voices.map(voice => <option value={voice.id} key={voice.id}>{voice.name}</option>)}</select><Icon name="chevron" size={18} /></label> : <div className="empty-inline"><Icon name="microphone" size={25} /><p>Create a voice profile from an authorized sample before synthesizing.</p><button className="secondary-button" onClick={onNewVoice}>Create first voice</button></div>}
-      {selectedVoiceProfile && <div className="selected-voice"><button className="voice-play" onClick={() => new Audio(apiUrl(`/voices/${selectedVoiceProfile.id}/preview`)).play()} aria-label={`Preview ${selectedVoiceProfile.name}`}><Icon name="play" size={14} /></button><div><strong>{selectedVoiceProfile.name}</strong><span>{formatTime(selectedVoiceProfile.duration_seconds)} reference · {selectedVoiceProfile.reference_text ? "transcript attached" : "embedding mode"}</span></div><Waveform src={apiUrl(`/voices/${selectedVoiceProfile.id}/preview`)} compact /></div>}
-
-      <div className="text-editor"><div className="editor-label"><label htmlFor="speech-text">WHAT SHOULD {selectedVoiceProfile?.name?.toUpperCase() || "THE VOICE"} SAY?</label><span>{text.length.toLocaleString()} / 5,000</span></div><textarea id="speech-text" value={text} onChange={event => setText(event.target.value.slice(0, 5000))} placeholder="Write naturally. Punctuation helps shape pauses and emphasis." /></div>
-      <div className="controls-row"><label><span>Language</span><select value={language} onChange={event => setLanguage(event.target.value)}>{LANGUAGE_OPTIONS.map(item => <option key={item}>{item}</option>)}</select></label><label className="range-label"><span>Speaking speed <b>{Number(speed).toFixed(2)}×</b></span><input type="range" min="0.5" max="2" step="0.05" value={speed} onChange={event => setSpeed(event.target.value)} /><div className="range-scale"><span>Slower</span><span>Faster</span></div></label></div>
-      <p className="control-note">Language is passed directly to Qwen3-TTS. Speed is applied locally after synthesis with pitch preservation. Other controls are intentionally omitted because the selected clone engine does not expose them as stable parameters.</p>
-      <button className="generate-button" onClick={onGenerate} disabled={loading || !voices.length}>{loading ? <><span className="spinner" />Generating on your device…</> : <><Icon name="wave" />Generate Speech</>}</button>
-    </section>
-
-    <aside className="output-panel panel">
-      <div className="section-heading"><div><p className="section-kicker">LATEST OUTPUT</p><h2>{output ? "Ready to hear" : "Waiting for a take"}</h2></div>{output && <button className="icon-button" onClick={onGenerate} title="Regenerate"><Icon name="refresh" /></button>}</div>
-      {output ? <div className="output-content"><Waveform src={assetUrl(output.audio_url)} /><audio className="audio-player" src={assetUrl(output.audio_url)} controls autoPlay /><div className="output-metadata"><div><span>VOICE</span><b>{voices.find(item => item.id === output.voice_id)?.name || output.voice_id}</b></div><div><span>TIME</span><b>{output.generation_seconds.toFixed(2)} sec</b></div><div><span>MODEL</span><b>Qwen3-TTS Base</b></div><div><span>OUTPUT</span><b>{formatTime(output.duration_seconds)}</b></div></div><p className="output-text">“{output.text}”</p><div className="download-row"><a className="download-button" href={assetUrl(output.wav_download_url)}><Icon name="download" size={16} />WAV</a>{output.mp3_download_url && <a className="download-button muted" href={assetUrl(output.mp3_download_url)}><Icon name="download" size={16} />MP3</a>}</div></div> : <div className="output-empty"><div className="empty-orb"><Icon name="wave" size={34} /></div><h3>Your voice, in motion.</h3><p>Generate a new line to preview it here, then save the audio in your preferred format.</p></div>}
-    </aside>
-  </div>;
+function Synthesize({ voices, voice, selectedVoice, setSelectedVoice, draft, setDraft, engine, capability, output, generating, generate, onNew, onCompare }) {
+  const languages = capability.supported_languages?.length ? capability.supported_languages : FALLBACK_LANGUAGES;
+  const set = (key,value) => setDraft(current => ({ ...current, [key]: value }));
+  return <div className="synth-layout"><section className="score panel"><div className="panel-label"><span>01 / SCORE</span><button onClick={onNew}><Icon name="plus"/> New voice</button></div>
+    {voices.length ? <div className="selector-row"><label>VOICE<select value={selectedVoice} onChange={e => setSelectedVoice(e.target.value)}>{voices.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label>ENGINE<select value={draft.engine_id} onChange={e => set("engine_id",e.target.value)}>{engine && <option value={engine.id}>{engine.name}</option>}</select></label>{capability.multilingual && <label>LANGUAGE<select value={draft.language} onChange={e => set("language",e.target.value)}>{languages.map(item => <option key={item}>{item}</option>)}</select></label>}</div> : <div className="inline-empty">No voice is patched in. <button onClick={onNew}>Create an authorized voice</button> to begin.</div>}
+    {voice && <div className="voice-strip"><button onClick={() => new Audio(apiUrl(`/voices/${voice.id}/preview`)).play()} aria-label={`Preview ${voice.name}`}><Icon name="play"/></button><div><strong>{voice.name}</strong><span>{voice.engine_id} · {formatTime(voice.duration_seconds)} reference · {voice.language}</span></div><Waveform compact/></div>}
+    <label className="editor"><span>SPOKEN TEXT <b>{draft.text.length} / 5,000</b></span><textarea value={draft.text} maxLength="5000" onChange={e => set("text",e.target.value)} placeholder="Write the line exactly as it should be spoken…"/></label>
+    <div className="spoken-preview"><span>NORMALIZED PREVIEW</span><p>{draft.text.trim() || "Your spoken-text preview will appear here."}</p></div>
+    {capability.speed && <label className="speed">SPEED <b>{Number(draft.speed).toFixed(2)}×</b><input type="range" min="0.5" max="2" step="0.05" value={draft.speed} onChange={e => set("speed",Number(e.target.value))}/></label>}
+    {(capability.seed || capability.style || capability.emotion || capability.temperature) && <details><summary>Engine-supported advanced controls</summary><div className="advanced">{capability.seed && <label>Seed<input type="number" value={draft.seed ?? ""} onChange={e => set("seed", e.target.value ? Number(e.target.value) : null)}/></label>}</div></details>}
+    <button className="generate" onClick={() => generate()} disabled={generating || !voices.length || !draft.text.trim()}>{generating ? <><span className="spinner"/> RENDERING TAKE</> : <><Icon name="wave"/> GENERATE SPEECH</>}</button><p className="truth-note">Rendered locally after submission. This engine does not advertise true streaming.</p>
+  </section><OutputDeck output={output} voices={voices} onRegenerate={() => generate(output)} onCompare={onCompare}/></div>;
 }
 
-function VoiceLibrary({ voices, onNewVoice, onDelete }) {
-  return <div><div className="page-intro"><p>Profiles combine your original authorized recordings with a clean reference prompt. Nothing is sent to a hosted TTS service.</p><button className="primary-button" onClick={onNewVoice}><Icon name="plus" />Create Voice</button></div>{voices.length ? <div className="voice-grid">{voices.map(voice => <article className="voice-card" key={voice.id}><div className="voice-card-top"><div className="voice-avatar">{voice.name.slice(0, 1).toUpperCase()}</div><button className="icon-button danger" onClick={() => onDelete(voice)} title="Delete voice"><Icon name="trash" size={17} /></button></div><h3>{voice.name}</h3><p>{formatTime(voice.duration_seconds)} cleaned reference · {voice.original_sample_count} original sample{voice.original_sample_count === 1 ? "" : "s"}</p><Waveform src={apiUrl(`/voices/${voice.id}/preview`)} compact /><div className="voice-card-footer"><span>Created {formatDate(voice.created_at)}</span><button className="play-text" onClick={() => new Audio(apiUrl(`/voices/${voice.id}/preview`)).play()}><Icon name="play" size={14} />Preview</button></div></article>)}</div> : <EmptyState icon="microphone" title="No voices yet" body="Add a clear recording of a voice you own or are explicitly authorized to reproduce." action="Create Voice" onAction={onNewVoice} />}</div>;
+function OutputDeck({ output, voices, onRegenerate, onCompare }) {
+  const rtf = output?.duration_seconds ? output.generation_seconds / output.duration_seconds : null;
+  return <aside className="deck panel"><div className="panel-label"><span>02 / OUTPUT DECK</span><span className="armed">MASTER</span></div>{output ? <><div className="deck-head"><div><span>TAKE {output.id.slice(0,6).toUpperCase()}</span><h2>{voices.find(v => v.id === output.voice_id)?.name || output.voice_id}</h2></div><time>{formatDate(output.created_at)}</time></div><div className="master-wave"><Waveform/><div className="ruler"><span>00:00</span><span>00:15</span><span>00:30</span></div></div><audio controls src={assetUrl(output.audio_url)}/><div className="meters">{[["GEN",`${output.generation_seconds.toFixed(2)}s`],["DURATION",formatTime(output.duration_seconds)],["RTF",rtf ? rtf.toFixed(2) : "—"],["MODEL",output.model_id],["DEVICE",output.device]].map(([k,v]) => <div key={k}><span>{k}</span><b title={v}>{v}</b></div>)}</div><blockquote>“{output.text}”</blockquote><div className="deck-actions"><a href={assetUrl(output.wav_download_url)} download><Icon name="download"/> WAV</a>{output.mp3_download_url && <a href={assetUrl(output.mp3_download_url)} download><Icon name="download"/> MP3</a>}<button onClick={onRegenerate}><Icon name="refresh"/> Regenerate</button><button onClick={onCompare}><Icon name="compare"/> Compare</button></div></> : <div className="deck-empty"><Waveform/><h2>No take on the deck</h2><p>Your latest local render will appear here with audio, timing, model and device readouts.</p></div>}</aside>;
 }
 
-function GenerationList({ generations, onSelect }) {
-  return generations.length ? <div className="generation-list panel">{generations.map(item => <button className="generation-row" onClick={() => onSelect(item)} key={item.id}><span className="generation-play"><Icon name="play" size={16} /></span><div className="generation-main"><strong>{item.text}</strong><span>{formatDate(item.created_at)} · {item.language} · {item.speed.toFixed(2)}×</span></div><div className="generation-stat"><span>GENERATION</span><b>{item.generation_seconds.toFixed(2)} sec</b></div><div className="generation-stat"><span>AUDIO</span><b>{formatTime(item.duration_seconds)}</b></div><Icon name="chevron" size={16} /></button>)}</div> : <EmptyState icon="history" title="No generations saved" body="Synthesized lines will appear here with audio playback and downloadable formats." />;
-}
+function Voices({ voices, onNew, onDelete }) { return <><div className="page-actions"><p>Reference audio and generated takes stay in deterministic local storage.</p><button className="primary" onClick={onNew}><Icon name="plus"/> Create voice</button></div>{voices.length ? <div className="voice-list">{voices.map(item => <article className="voice-card" key={item.id}><div className="index">{item.name.slice(0,2).toUpperCase()}</div><div><span className="label">{item.engine_id} / {item.language}</span><h2>{item.name}</h2><p>{item.original_sample_count} source reference{item.original_sample_count === 1 ? "" : "s"} · {formatTime(item.duration_seconds)} · created {formatDate(item.created_at)}</p><Waveform compact/></div><div className="card-actions"><span className="quality">UNMEASURED</span><button onClick={() => new Audio(apiUrl(`/voices/${item.id}/preview`)).play()}><Icon name="play"/> Preview</button><button className="danger" onClick={() => onDelete(item)}><Icon name="trash"/> Delete</button></div></article>)}</div> : <Empty icon="voices" title="The voice cabinet is empty" body="Create a profile from a voice you own or have explicit permission to reproduce." action="Create voice" onAction={onNew}/>}</> }
 
-function SettingsPanel({ device }) {
-  return <div className="settings-stack"><section className="panel settings-card"><div className="settings-icon"><Icon name="cpu" size={23} /></div><div><p className="section-kicker">INFERENCE DEVICE</p><h2>{device?.accelerator_available ? device.gpu_name : "CPU-only mode"}</h2><p>{device?.accelerator_available ? `${device.vram_total_mb} MB VRAM is available. Qwen3-TTS will remain loaded after its first generation.` : "No compatible CUDA GPU was detected. Local synthesis remains available but may be significantly slower."}</p></div><span className={`device-state ${device?.accelerator_available ? "ready" : "caution"}`}>{device?.accelerator_available ? "CUDA ready" : "CPU fallback"}</span></section><section className="panel settings-card"><div className="settings-icon"><Icon name="wave" size={23} /></div><div><p className="section-kicker">LOCAL MODEL</p><h2>{device?.model_id || "Qwen3-TTS Base"}</h2><p>Zero-shot clone prompts are stored in memory after first use while raw source recordings and all generated audio remain inside the local storage directory.</p></div><span className={`device-state ${device?.model_loaded ? "ready" : "neutral"}`}>{device?.model_loaded ? "Loaded" : "Loads on first use"}</span></section><section className="panel privacy-card"><Icon name="check" size={21} /><div><h3>Permission-based voice creation</h3><p>Creating a profile requires confirmation that you own the voice or have explicit permission to reproduce it. The app is built for personal, authorized use.</p></div></section></div>;
-}
+function Generations({ items, voices, onRestore, onRegenerate, onDelete }) { const [query,setQuery]=useState(""); const filtered=items.filter(item => item.text.toLowerCase().includes(query.toLowerCase()) || voices.find(v=>v.id===item.voice_id)?.name.toLowerCase().includes(query.toLowerCase())); return <><label className="search"><Icon name="search"/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search text or voice…"/></label>{filtered.length ? <div className="generation-list">{filtered.map(item => <article key={item.id}><button className="play" onClick={() => new Audio(assetUrl(item.audio_url)).play()} aria-label="Play take"><Icon name="play"/></button><div className="generation-copy"><strong>{item.text}</strong><span>{voices.find(v=>v.id===item.voice_id)?.name || item.voice_id} · {formatDate(item.created_at)} · {item.language} · {Number(item.speed).toFixed(2)}×</span></div><div className="generation-readout"><span>{formatTime(item.duration_seconds)}</span><b>{item.generation_seconds.toFixed(2)}s GEN</b></div><div className="row-actions"><button onClick={() => onRestore(item)}>Restore</button><button onClick={() => onRegenerate(item)}><Icon name="refresh"/></button><button className="danger" onClick={() => onDelete(item)}><Icon name="trash"/></button></div></article>)}</div> : <Empty icon="history" title={items.length ? "No matching takes" : "No generations yet"} body={items.length ? "Try a different text or voice search." : "Rendered speech will become a real, playable local library here."}/>}</> }
 
-function EmptyState({ icon, title, body, action, onAction }) { return <section className="empty-state"><div className="empty-orb"><Icon name={icon} size={33} /></div><h2>{title}</h2><p>{body}</p>{action && <button className="primary-button" onClick={onAction}>{action}</button>}</section>; }
+function Compare({ items, voices }) { const [a,setA]=useState(items[0]?.id||""), [b,setB]=useState(items[1]?.id||""); const A=items.find(i=>i.id===a), B=items.find(i=>i.id===b); return items.length >= 2 ? <div className="compare-grid">{[["A",A,setA],["B",B,setB]].map(([label,item,setter]) => <section className="compare-side panel" key={label}><div className="channel">CHANNEL {label}</div><select value={item?.id||""} onChange={e=>setter(e.target.value)}>{items.map(g=><option key={g.id} value={g.id}>{voices.find(v=>v.id===g.voice_id)?.name || g.voice_id} — {g.text.slice(0,42)}</option>)}</select>{item && <><Waveform/><audio controls src={assetUrl(item.audio_url)}/><p>“{item.text}”</p><div className="compare-meta"><span>{item.model_id}</span><span>{formatTime(item.duration_seconds)}</span><span>{item.generation_seconds.toFixed(2)}s gen</span></div></>}</section>)}</div> : <Empty icon="compare" title="Two real takes are required" body="Generate at least two takes. Compare never invents ratings, scores, or placeholder audio."/> }
 
-function CreateVoiceDialog({ onClose, onCreated }) {
-  const [name, setName] = useState("");
-  const [referenceText, setReferenceText] = useState("");
-  const [files, setFiles] = useState([]);
-  const [recording, setRecording] = useState(false);
-  const [authorized, setAuthorized] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState("");
-  const recorderRef = useRef(null);
-  const chunksRef = useRef([]);
+function QualityLab({ engine }) { return <div className="lab-layout"><section className="panel lab-hero"><span className="lab-mark">QL</span><div><p className="label">CHECKED-IN GOLDEN SUITE</p><h2>Quality is a test, not a badge.</h2><p>The Quality Lab is ready to describe repeatable evaluation for this engine, but no benchmark results have been measured in this session.</p></div></section><section className="panel setup"><p className="label">SETUP STATE</p><h3>Measurement run not available</h3><ul><li><Icon name="check"/> Engine detected: {engine?.name || "none"}</li><li><Icon name="check"/> Golden-suite concept available</li><li><Icon name="warning"/> No backend benchmark route is exposed</li></ul><p>When measured engine support is added, this area can surface real pronunciation, similarity, and latency results.</p></section></div> }
 
-  async function toggleRecording() {
-    setError("");
-    if (recording && recorderRef.current) { recorderRef.current.stop(); return; }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream);
-      chunksRef.current = [];
-      recorder.ondataavailable = event => chunksRef.current.push(event.data);
-      recorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" });
-        const clip = new File([blob], `recording-${Date.now()}.webm`, { type: blob.type });
-        setFiles(current => [...current, clip]);
-        stream.getTracks().forEach(track => track.stop());
-        setRecording(false);
-      };
-      recorder.start();
-      recorderRef.current = recorder;
-      setRecording(true);
-    } catch {
-      setError("Microphone access was unavailable. You can still upload an audio file.");
-    }
-  }
+function Settings({ engines, device }) { return <div className="settings-grid"><section className="panel rack"><p className="label">HARDWARE</p><h2>{device?.gpu_name || "CPU inference"}</h2><dl><div><dt>ACTIVE DEVICE</dt><dd>{device?.active_device}</dd></div><div><dt>ACCELERATOR</dt><dd>{device?.accelerator_available ? "AVAILABLE" : "NOT DETECTED"}</dd></div><div><dt>VRAM</dt><dd>{device?.vram_total_mb ? `${device.vram_total_mb} MB` : "—"}</dd></div></dl></section>{engines.map(item => <section className="panel rack" key={item.id}><p className="label">ENGINE / MODEL</p><h2>{item.name}</h2><dl><div><dt>MODEL</dt><dd>{item.model_id}</dd></div><div><dt>LOAD STATE</dt><dd>{item.loaded ? "LOADED" : "LOADS ON USE"}</dd></div>{Object.entries(item.capabilities).filter(([,v])=>typeof v === "boolean").map(([k,v])=><div key={k}><dt>{k.replaceAll("_"," ")}</dt><dd className={v?"yes":"no"}>{v?"YES":"NO"}</dd></div>)}</dl></section>)}<section className="panel storage"><Icon name="check"/><div><h3>Local, deterministic storage</h3><p>Voice sources and every generated WAV/MP3 remain under the backend’s configured storage root. Athena makes no telemetry calls and does not require external assets for normal operation.</p></div></section></div> }
 
-  async function submit(event) {
-    event.preventDefault();
-    if (!name.trim() || !files.length || !authorized) { setError("Enter a name, add a recording, and confirm your authorization."); return; }
-    setSubmitting(true); setError("");
-    const form = new FormData();
-    form.append("name", name.trim());
-    form.append("reference_text", referenceText.trim());
-    form.append("authorization_acknowledged", String(authorized));
-    files.forEach(file => form.append("files", file));
-    try {
-      const response = await fetch(apiUrl("/voices"), { method: "POST", body: form });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.detail || "Unable to save this voice profile.");
-      onCreated(payload.voice);
-    } catch (requestError) { setError(requestError.message); } finally { setSubmitting(false); }
-  }
+function LoadingState(){ return <div className="loading-state"><span className="spinner"/><p>Reading local engine and library state…</p></div> }
+function Empty({icon,title,body,action,onAction}){ return <section className="empty"><Icon name={icon} size={34}/><h2>{title}</h2><p>{body}</p>{action&&<button className="primary" onClick={onAction}>{action}</button>}</section> }
 
-  return <div className="modal-backdrop" role="presentation"><form className="voice-dialog" onSubmit={submit}><div className="dialog-header"><div><p className="section-kicker">NEW VOICE PROFILE</p><h2>Capture the reference</h2></div><button type="button" className="icon-button" onClick={onClose}><Icon name="close" /></button></div><p className="dialog-lead">For a natural clone, use one clear speaker in a quiet space. Aim for <strong>10–30 seconds</strong> of steady, conversational speech. Original files are retained locally.</p><label className="field-label">Voice name<input value={name} onChange={event => setName(event.target.value)} placeholder="e.g. Athena" maxLength="80" /></label><label className="field-label">Reference transcript <span>Recommended for best cloning</span><textarea value={referenceText} onChange={event => setReferenceText(event.target.value)} placeholder="Type the words spoken in the recording. If blank, the model uses speaker embedding mode with lower fidelity." maxLength="2000" /></label><div className="sample-actions"><label className="upload-zone"><input type="file" accept="audio/*" multiple onChange={event => setFiles(current => [...current, ...Array.from(event.target.files || [])])} /><Icon name="upload" size={20} /><span><b>Upload recordings</b><small>WAV, MP3, M4A, FLAC, OGG, AAC, or WebM</small></span></label><button type="button" className={`record-button ${recording ? "recording" : ""}`} onClick={toggleRecording}><Icon name="microphone" size={20} /><span>{recording ? "Stop recording" : "Record sample"}</span></button></div>{files.length > 0 && <div className="file-list">{files.map((file, index) => <div key={`${file.name}-${index}`}><Icon name="wave" size={15} /><span>{file.name}</span><small>{(file.size / 1024 / 1024).toFixed(1)} MB</small><button type="button" onClick={() => setFiles(current => current.filter((_, itemIndex) => itemIndex !== index))}><Icon name="close" size={14} /></button></div>)}</div>}<label className="consent"><input type="checkbox" checked={authorized} onChange={event => setAuthorized(event.target.checked)} /><span>I own this voice or have explicit permission from the voice owner to create and use this local profile.</span></label>{error && <p className="form-error"><Icon name="warning" size={15} />{error}</p>}<div className="dialog-footer"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" disabled={submitting}>{submitting ? "Preparing profile…" : "Save Voice"}</button></div></form></div>;
-}
+function CreateVoice({ onClose, onCreated }) { const [name,setName]=useState(""),[transcript,setTranscript]=useState(""),[files,setFiles]=useState([]),[authorized,setAuthorized]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(""); const submit=async e=>{e.preventDefault();if(!name.trim()||!files.length||!authorized)return setError("Add a name, at least one audio file, and confirm permission.");setBusy(true);const form=new FormData();form.append("name",name.trim());form.append("reference_text",transcript.trim());form.append("authorization_acknowledged",String(authorized));files.forEach(file=>form.append("files",file));try{const response=await fetch(apiUrl("/voices"),{method:"POST",body:form});const payload=await response.json();if(!response.ok)throw new Error(payload.detail||"Voice creation failed.");onCreated(payload.voice)}catch(err){setError(err.message)}finally{setBusy(false)}}; return <div className="modal"><form className="dialog" onSubmit={submit}><header><div><p className="label">NEW AUTHORIZED PROFILE</p><h2>Patch in a voice</h2></div><button type="button" onClick={onClose} aria-label="Close"><Icon name="close"/></button></header><p>Use a clean, single-speaker recording. Source files stay on this machine.</p><label>VOICE NAME<input value={name} onChange={e=>setName(e.target.value)} maxLength="80" placeholder="Studio name"/></label><label>REFERENCE TRANSCRIPT <span>recommended</span><textarea value={transcript} onChange={e=>setTranscript(e.target.value)} maxLength="2000" placeholder="Words spoken in the sample"/></label><label className="upload"><Icon name="upload"/><span>{files.length ? `${files.length} file${files.length>1?"s":""} selected` : "Choose reference audio"}<small>WAV, MP3, M4A, FLAC, OGG, AAC or WebM</small></span><input type="file" accept="audio/*" multiple onChange={e=>setFiles(Array.from(e.target.files||[]))}/></label><label className="consent"><input type="checkbox" checked={authorized} onChange={e=>setAuthorized(e.target.checked)}/><span>I own this voice or have explicit permission to reproduce it.</span></label>{error&&<p className="form-error">{error}</p>}<footer><button type="button" onClick={onClose}>Cancel</button><button className="primary" disabled={busy}>{busy?"Preparing…":"Save voice"}</button></footer></form></div> }
 
 export default App;

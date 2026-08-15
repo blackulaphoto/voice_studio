@@ -14,7 +14,7 @@ Athena Voice Studio is a **local, permission-based voice-cloning application** f
 | Voice library | Displays profile name, cleaned-reference duration, source-sample count, creation date, waveform, preview, and deletion. |
 | Generations | Shows saved lines, generation time, output duration, playback, re-open/regenerate workflow, and WAV/MP3 downloads. |
 | Device behavior | Detects CUDA availability at startup, displays GPU/VRAM or CPU fallback in the interface, loads the model lazily, and retains it for later generations. |
-| Athena integration | Exposes stable local REST endpoints so Athena can generate speech without using the frontend. |
+| Local API | Exposes stable loopback REST endpoints for authorized local clients; integration with any other application is outside this project. |
 
 ## Project layout
 
@@ -64,7 +64,7 @@ The first synthesis loads and downloads the selected model through the local Qwe
 
 Record one clear speaker in a quiet, non-reverberant room. **10–30 seconds** of conversational speech is a good starting range; the app accepts multiple samples and keeps their originals. Enter the text that was spoken in the supplied reference whenever possible. Qwen’s documented clone API accepts both `ref_audio` and `ref_text`; supplying the transcript enables its full prompt representation, while embedding-only fallback may lower fidelity.[1]
 
-The profile creator saves originals in `storage/samples/<voice-id>/`, prepares the local inference reference at `storage/voices/<voice-id>/reference.wav`, and stores profile metadata in `storage/athena_voice.db`.
+The profile creator saves originals in the canonical project-local `storage/samples/<voice-id>/`, prepares the inference reference at `storage/voices/<voice-id>/reference.wav`, and stores metadata in `storage/athena_voice.db`. A configured relative `STORAGE_ROOT` is always resolved from the project root, never the process working directory.
 
 ## API contract
 
@@ -83,7 +83,7 @@ All API paths are local and prefixed with `/api`.
 | `GET` | `/api/generations/{generation_id}/download/wav` | Downloads WAV. |
 | `GET` | `/api/generations/{generation_id}/download/mp3` | Downloads MP3 when available. |
 
-### Athena example
+### Local API example
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/tts ^

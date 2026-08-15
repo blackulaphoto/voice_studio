@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_STORAGE_ROOT = PROJECT_ROOT.parent / "storage"
+DEFAULT_STORAGE_ROOT = PROJECT_ROOT / "storage"
 
 
 class Settings(BaseSettings):
@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     force_device: str | None = None
     cors_origins: str = "http://127.0.0.1:5173,http://localhost:5173"
     max_upload_mb: int = 250
+
+    def model_post_init(self, __context: object) -> None:
+        root = self.storage_root.expanduser()
+        if not root.is_absolute():
+            root = PROJECT_ROOT / root
+        self.storage_root = root.resolve()
 
     @property
     def voices_dir(self) -> Path:

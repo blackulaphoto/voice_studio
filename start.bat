@@ -10,9 +10,9 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 if not exist "frontend\node_modules" (
-  echo Frontend packages are missing. Running pnpm install...
+  echo Frontend packages are missing. Running npm install...
   pushd frontend
-  call pnpm install
+  call npm.cmd install
   popd
 )
 
@@ -22,7 +22,7 @@ start "Athena Voice API" cmd /k "cd /d "%~dp0backend" && "%~dp0.venv\Scripts\pyt
 timeout /t 2 /nobreak >nul
 
 echo Starting Athena Voice Studio on http://127.0.0.1:5173 ...
-start "Athena Voice Studio" cmd /k "cd /d "%~dp0frontend" && pnpm dev"
+start "Athena Voice Studio" cmd /k "cd /d "%~dp0frontend" && npm.cmd run dev"
 
 echo.
 echo Athena Voice Studio is starting. Open http://127.0.0.1:5173 in your browser.

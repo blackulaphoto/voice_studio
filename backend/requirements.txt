@@ -8,3 +8,4 @@ python-multipart>=0.0.12
 pydantic-settings>=2.6.0
 soundfile>=0.12.1
 requests>=2.31.0
+psutil>=6.1.0
