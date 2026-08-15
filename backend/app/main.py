@@ -311,10 +311,15 @@ def synthesize(payload: GenerationRequest) -> GenerationResponse:
             text=spoken_text,
             language=payload.language,
             output_path=wav_path,
-            settings=payload.engine_settings,
+            settings={**payload.engine_settings, "_mode": payload.mode},
         )
+        synthesis_finished = time.perf_counter()
         time_stretch(wav_path, payload.speed)
+        stretch_finished = time.perf_counter()
         exported_mp3 = export_mp3(wav_path, mp3_path)
+        export_finished = time.perf_counter()
+        measured_duration = duration_seconds(wav_path)
+        probe_finished = time.perf_counter()
         elapsed = round(time.perf_counter() - started, 3)
         generation = create_generation(
             generation_id=generation_id,
@@ -325,7 +330,7 @@ def synthesize(payload: GenerationRequest) -> GenerationResponse:
             style_instruction=None,
             model_id=settings.qwen_model_id,
             device=engine.hardware().active_device,
-            duration_seconds=duration_seconds(wav_path),
+            duration_seconds=measured_duration,
             generation_seconds=elapsed,
             wav_path=wav_path,
             mp3_path=mp3_path if exported_mp3 else None,
@@ -334,7 +339,19 @@ def synthesize(payload: GenerationRequest) -> GenerationResponse:
             mode=payload.mode,
             performance=payload.performance,
             seed=payload.seed,
-            settings={"speed": payload.speed, **payload.engine_settings},
+            settings={
+                "normalize_text": payload.normalize_text,
+                "speed": payload.speed,
+                **payload.engine_settings,
+                **engine.last_effective_settings,
+                "phase_timings": {
+                    **engine.last_timings,
+                    "post_speed_seconds": round(stretch_finished - synthesis_finished, 3),
+                    "mp3_export_seconds": round(export_finished - stretch_finished, 3),
+                    "duration_probe_seconds": round(probe_finished - export_finished, 3),
+                    "request_total_seconds": elapsed,
+                },
+            },
             reference_set=list(voice["original_sample_paths"]),
             benchmark_label=payload.benchmark_label,
         )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,8 @@ class QwenVoiceCloneEngine(TTSEngine):
         self._model: Any | None = None
         self._hardware: HardwareInfo | None = None
         self._prompt_cache: dict[str, Any] = {}
+        self._last_timings: dict[str, float] = {}
+        self._last_effective_settings: dict[str, Any] = {}
         self._lock = threading.RLock()
 
     def hardware(self) -> HardwareInfo:
@@ -82,6 +85,19 @@ class QwenVoiceCloneEngine(TTSEngine):
             speed=True,
             supported_languages=("English", "Chinese", "Japanese", "Korean", "German", "French", "Russian", "Portuguese", "Spanish", "Italian", "Auto"),
         )
+
+    @property
+    def last_timings(self) -> dict[str, float]:
+        return dict(self._last_timings)
+
+    @property
+    def last_effective_settings(self) -> dict[str, Any]:
+        return dict(self._last_effective_settings)
+
+    @staticmethod
+    def _generation_kwargs(settings: dict[str, Any] | None) -> dict[str, Any]:
+        mode = (settings or {}).get("_mode", "quality")
+        return {"non_streaming_mode": True} if mode == "fast" else {}
 
     def _safe_dtype(self, torch: Any, hardware: HardwareInfo) -> Any:
         if not hardware.accelerator_available:
@@ -195,20 +211,39 @@ class QwenVoiceCloneEngine(TTSEngine):
         settings: dict[str, Any] | None = None,
     ) -> int:
         """Generate actual clone audio through the installed Qwen3-TTS Base model."""
+        total_started = time.perf_counter()
+        load_started = time.perf_counter()
         self.load()
+        load_seconds = time.perf_counter() - load_started
         with self._lock:
             assert self._model is not None
+            prompt_started = time.perf_counter()
             prompt = self._prompt_for(voice_id, reference_audio, reference_text)
+            prompt_seconds = time.perf_counter() - prompt_started
+            generation_kwargs = self._generation_kwargs(settings)
             try:
                 import soundfile as sf
 
+                inference_started = time.perf_counter()
                 wavs, sample_rate = self._model.generate_voice_clone(
                     text=text,
                     language=language,
                     voice_clone_prompt=prompt,
+                    **generation_kwargs,
                 )
+                inference_seconds = time.perf_counter() - inference_started
+                write_started = time.perf_counter()
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 sf.write(str(output_path), wavs[0], sample_rate)
+                write_seconds = time.perf_counter() - write_started
+                self._last_effective_settings = generation_kwargs
+                self._last_timings = {
+                    "model_load_seconds": round(load_seconds, 3),
+                    "voice_prompt_seconds": round(prompt_seconds, 3),
+                    "inference_and_decode_seconds": round(inference_seconds, 3),
+                    "wav_write_seconds": round(write_seconds, 3),
+                    "engine_total_seconds": round(time.perf_counter() - total_started, 3),
+                }
                 return int(sample_rate)
             except Exception as exc:
                 raise EngineUnavailableError(f"Local voice synthesis failed: {exc}") from exc

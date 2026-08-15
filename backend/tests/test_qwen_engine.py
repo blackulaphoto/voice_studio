@@ -47,6 +47,16 @@ def test_capabilities_do_not_advertise_fake_controls() -> None:
     assert capabilities.true_streaming is False
 
 
+def test_quality_preserves_qwen_generation_defaults() -> None:
+    assert QwenVoiceCloneEngine._generation_kwargs({"_mode": "quality"}) == {}
+
+
+def test_fast_uses_qwen_non_streaming_text_path() -> None:
+    assert QwenVoiceCloneEngine._generation_kwargs({"_mode": "fast"}) == {
+        "non_streaming_mode": True
+    }
+
+
 def test_complete_local_snapshot_enables_offline_loading(monkeypatch, tmp_path: Path) -> None:
     model_id = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
     snapshot = tmp_path / "hub" / "models--Qwen--Qwen3-TTS-12Hz-0.6B-Base" / "snapshots" / "revision"
