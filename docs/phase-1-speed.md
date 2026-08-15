@@ -50,8 +50,9 @@ remove or replace this experiment rather than rationalizing the regression.
 
 ## Human listening result
 
-The user judged the FAST take generally good and still recognizable, but reported that its
-pacing sometimes runs over itself and does not follow normal conversational cadence as well as
-QUALITY. Because the paired takes used identical text and punctuation, punctuation alone does
-not explain the difference. FAST is therefore accepted only as a usable experimental option,
-not as a replacement for QUALITY and not as the default.
+The user listened directly to the matched QUALITY and FAST takes and judged both to be great,
+with no pacing or voice-quality problem in either comparison clip. An earlier pacing concern
+was traced to a separate user-created synthesis and does not apply to this paired benchmark.
+FAST therefore passes this short-sentence human identity and naturalness gate. It remains
+Experimental and QUALITY remains the default because the measured speed improvement was only
+6.3% and the 30-word and 100-word acceptance benchmarks have not yet been run.
