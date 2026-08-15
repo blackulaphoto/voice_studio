@@ -6,6 +6,7 @@ quality_samples/**/*.wav
 quality_samples/**/*.mp3
 quality_samples/**/*.flac
 quality_samples/**/*.ogg
+quality_samples/golden_baseline/
 __pycache__/
 .pytest_cache/
 *.pyc
