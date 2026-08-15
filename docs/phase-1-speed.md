@@ -47,3 +47,11 @@ The paired takes are persisted in the Studio as:
 
 Use the Compare workspace for the listening gate. If FAST audibly degrades the Golden Voice,
 remove or replace this experiment rather than rationalizing the regression.
+
+## Human listening result
+
+The user judged the FAST take generally good and still recognizable, but reported that its
+pacing sometimes runs over itself and does not follow normal conversational cadence as well as
+QUALITY. Because the paired takes used identical text and punctuation, punctuation alone does
+not explain the difference. FAST is therefore accepted only as a usable experimental option,
+not as a replacement for QUALITY and not as the default.
