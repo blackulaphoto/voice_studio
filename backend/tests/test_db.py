@@ -37,3 +37,22 @@ def test_voice_delete_cascades_generation_rows(monkeypatch, tmp_path: Path) -> N
     assert [item["id"] for item in deleted[1]] == ["generation"]
     assert db.get_voice("voice") is None
     assert db.get_generation("generation") is None
+
+
+def test_generation_benchmark_label_can_be_saved_and_updated(monkeypatch, tmp_path: Path) -> None:
+    configure_db(monkeypatch, tmp_path)
+    db.create_voice(
+        voice_id="voice", name="Voice", reference_audio_path=tmp_path / "ref.wav",
+        original_sample_paths=[tmp_path / "source.wav"], reference_text="hello",
+        duration_seconds=4.0,
+    )
+    created = db.create_generation(
+        generation_id="generation", voice_id="voice", text="new words", language="English",
+        speed=1.0, style_instruction=None, model_id="model", device="cpu",
+        duration_seconds=1.0, generation_seconds=2.0, wav_path=tmp_path / "out.wav", mp3_path=None,
+        benchmark_label="Golden baseline · Neutral text · no performance preset",
+    )
+    assert created["benchmark_label"].startswith("Golden baseline")
+    updated = db.update_generation_label("generation", "Golden baseline · Warm text · no performance preset")
+    assert updated is not None
+    assert updated["benchmark_label"] == "Golden baseline · Warm text · no performance preset"

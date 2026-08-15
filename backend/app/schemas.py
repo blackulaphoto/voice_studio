@@ -70,6 +70,11 @@ class GenerationRequest(BaseModel):
     normalize_text: bool = True
     pronunciation_overrides: dict[str, str] = Field(default_factory=dict)
     engine_settings: dict[str, Any] = Field(default_factory=dict)
+    benchmark_label: str | None = Field(default=None, max_length=120)
+
+
+class GenerationPatchRequest(BaseModel):
+    benchmark_label: str | None = Field(default=None, max_length=120)
 
 
 class GenerationResponse(BaseModel):
@@ -93,6 +98,7 @@ class GenerationResponse(BaseModel):
     seed: int | None = None
     settings: dict[str, Any] = Field(default_factory=dict)
     reference_set: list[str] = Field(default_factory=list)
+    benchmark_label: str | None = None
 
 
 class GenerationListResponse(BaseModel):

@@ -36,6 +36,21 @@ CASES = {
     "numbers_and_dates": "Your appointment is August twenty-third at ten thirty-five in the morning. The balance is one hundred forty-seven dollars and sixty-two cents, and the confirmation number is four eight two seven.",
 }
 
+DISPLAY_LABELS = {
+    "neutral_30_words": "Neutral text",
+    "warm": "Warm text",
+    "playful": "Playful text",
+    "serious": "Serious text",
+    "sexy": "Sexy text",
+    "short_conversational_10_words": "Short conversational text",
+    "long_paragraph_100_words": "Long-form text",
+    "numbers_and_dates": "Numbers and dates text",
+}
+
+
+def benchmark_label(case_id: str) -> str:
+    return f"Golden baseline · {DISPLAY_LABELS[case_id]} · no performance preset"
+
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -119,6 +134,16 @@ def main() -> None:
     write_metadata(metadata)
     for label, text in CASES.items():
         if metadata["cases"].get(label, {}).get("status") == "passed":
+            generation_id = metadata["cases"][label].get("id")
+            if generation_id:
+                response = requests.patch(
+                    f"{API}/generations/{generation_id}",
+                    json={"benchmark_label": benchmark_label(label)},
+                    timeout=30,
+                )
+                response.raise_for_status()
+                metadata["cases"][label]["benchmark_label"] = benchmark_label(label)
+                write_metadata(metadata)
             print(f"SKIP {label}: already captured", flush=True)
             continue
         print(f"GENERATE {label} ({len(text.split())} words)", flush=True)
@@ -132,6 +157,7 @@ def main() -> None:
                 "speed": 1.0,
                 "mode": "quality",
                 "engine_id": "qwen3",
+                "benchmark_label": benchmark_label(label),
             },
             timeout=1800,
         )

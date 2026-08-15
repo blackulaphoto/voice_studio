@@ -68,6 +68,7 @@ def init_db() -> None:
             "settings_json": "TEXT NOT NULL DEFAULT '{}'",
         })
         _ensure_columns(conn, "generations", {
+            "benchmark_label": "TEXT",
             "normalized_text": "TEXT",
             "engine_id": "TEXT NOT NULL DEFAULT 'qwen3'",
             "mode": "TEXT NOT NULL DEFAULT 'quality'",
@@ -194,6 +195,7 @@ def create_generation(
     seed: int | None = None,
     settings: dict[str, Any] | None = None,
     reference_set: list[str] | None = None,
+    benchmark_label: str | None = None,
 ) -> dict[str, Any]:
     import json
     now = utc_now()
@@ -203,8 +205,9 @@ def create_generation(
             INSERT INTO generations (
                 id, voice_id, text, language, speed, style_instruction, model_id, device,
                 duration_seconds, generation_seconds, wav_path, mp3_path, created_at,
-                normalized_text, engine_id, mode, performance, seed, settings_json, reference_set_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                normalized_text, engine_id, mode, performance, seed, settings_json, reference_set_json,
+                benchmark_label
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 generation_id,
@@ -227,6 +230,7 @@ def create_generation(
                 seed,
                 json.dumps(settings or {}),
                 json.dumps(reference_set or []),
+                benchmark_label,
             ),
         )
     return get_generation(generation_id)  # type: ignore[return-value]
@@ -275,3 +279,14 @@ def delete_generation(generation_id: str) -> dict[str, Any] | None:
     with connection() as conn:
         conn.execute("DELETE FROM generations WHERE id = ?", (generation_id,))
     return generation
+
+
+def update_generation_label(generation_id: str, benchmark_label: str | None) -> dict[str, Any] | None:
+    if get_generation(generation_id) is None:
+        return None
+    with connection() as conn:
+        conn.execute(
+            "UPDATE generations SET benchmark_label = ? WHERE id = ?",
+            (benchmark_label or None, generation_id),
+        )
+    return get_generation(generation_id)

@@ -24,11 +24,13 @@ from .db import (
     list_generations,
     list_voices,
     update_voice,
+    update_generation_label,
 )
 from .schemas import (
     DeviceInfo,
     GenerationListResponse,
     GenerationRequest,
+    GenerationPatchRequest,
     GenerationResponse,
     HealthResponse,
     EngineInfo,
@@ -115,6 +117,7 @@ def _generation_response(generation: dict) -> GenerationResponse:
         seed=generation.get("seed"),
         settings=generation.get("settings", {}),
         reference_set=generation.get("reference_set", []),
+        benchmark_label=generation.get("benchmark_label"),
     )
 
 
@@ -333,6 +336,7 @@ def synthesize(payload: GenerationRequest) -> GenerationResponse:
             seed=payload.seed,
             settings={"speed": payload.speed, **payload.engine_settings},
             reference_set=list(voice["original_sample_paths"]),
+            benchmark_label=payload.benchmark_label,
         )
         return _generation_response(generation)
     except (EngineUnavailableError, AudioProcessingError) as exc:
@@ -351,6 +355,14 @@ def get_generations() -> GenerationListResponse:
 @app.get(f"{settings.api_prefix}/generations/{{generation_id}}", response_model=GenerationResponse)
 def get_generation_detail(generation_id: str) -> GenerationResponse:
     generation = get_generation(generation_id)
+    if generation is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Generation not found.")
+    return _generation_response(generation)
+
+
+@app.patch(f"{settings.api_prefix}/generations/{{generation_id}}", response_model=GenerationResponse)
+def patch_generation(generation_id: str, payload: GenerationPatchRequest) -> GenerationResponse:
+    generation = update_generation_label(generation_id, payload.benchmark_label)
     if generation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Generation not found.")
     return _generation_response(generation)
