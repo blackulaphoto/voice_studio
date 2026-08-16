@@ -30,3 +30,29 @@ and create a meaningful delivery difference before the remaining profiles are ac
 Generation history persists the selected profile, its exact supported parameters, effective
 pace, and reference source. Optional performance-specific recordings remain an advanced backend
 capability, not a normal-use requirement.
+
+## Generated listening suite
+
+All presets use the same twelve-word acceptance sentence and the existing Golden Voice in
+Quality mode. Timing proves that the profiles affected generation and/or pacing, but does not by
+itself prove that the emotional name is perceptually correct.
+
+| Preset | Generation (s) | Audio (s) | RTF | Status before listening |
+|---|---:|---:|---:|---|
+| Neutral | 75.198 | 3.92 | 19.18 | Generated |
+| Warm | 235.710 | 10.49 | 22.47 | User approved |
+| Playful | 70.874 | 2.91 | 24.36 | Generated; inspect for rushing |
+| Serious | 115.542 | 8.93 | 12.94 | Generated |
+| Soft | 79.059 | 4.34 | 18.22 | Generated |
+| Excited | 66.531 | 2.58 | 25.79 | Generated; inspect for rushing |
+| Concerned | 106.422 | 3.55 | 29.98 | Generated with safe fallback |
+| Firm | 81.949 | 3.82 | 21.45 | Generated |
+| Intimate | 97.921 | 3.63 | 26.98 | Generated |
+| Tired | 182.263 | 11.29 | 16.14 | Generated; inspect long delivery |
+
+Two earlier Concerned sampling profiles exceeded practical latency limits on the short sentence
+and were terminated. The accepted candidate uses Golden sampling defaults plus a 0.92 pace
+adjustment. This preserves a bounded, real change without claiming unstable sampling as emotion.
+
+The local, resumable harness is `scripts/benchmark_phase2.py`. Its private generation IDs and
+exact local results are stored under the gitignored `quality_samples/phase_2/` directory.

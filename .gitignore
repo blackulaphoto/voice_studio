@@ -8,6 +8,7 @@ quality_samples/**/*.flac
 quality_samples/**/*.ogg
 quality_samples/golden_baseline/
 quality_samples/phase_1/
+quality_samples/phase_2/
 __pycache__/
 .pytest_cache/
 *.pyc
