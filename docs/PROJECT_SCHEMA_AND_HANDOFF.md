@@ -575,3 +575,20 @@ pronunciation dictionary; batch generation; exact history/regeneration/duplicate
 progressive chunked playback only if honest; benchmark/rating system; restart/offline reliability;
 one-click Windows launch hardening. Do not add Chatterbox/F5 or unrelated engines until the current
 Qwen path and active phase are gated and checkpointed.
+
+### TODO (not started, user-deferred)
+
+- **STT for reference transcription**, so uploaded voice/performance reference audio can be
+  auto-transcribed into the exact `reference_text` field instead of the user typing it or
+  transcribing externally with a separate outside tool. Requested 2026-08-16; explicitly deferred —
+  do not start without the user asking. Two paths, undecided which:
+  - **OpenAI's cloud transcription API** (Whisper / `gpt-4o-transcribe`) — simplest to integrate,
+    but would be the project's first outbound network call / cloud dependency (needs an API key),
+    which cuts against the non-negotiable "Private audio, transcripts, generations... stay local"
+    rule above (reference audio would leave the machine). Raise that trade-off explicitly before
+    implementing this path.
+  - **Local Whisper** (open-source, not the API) — `faster-whisper` (CTranslate2, INT8-quantized,
+    good CPU performance) is the likely pick, matching the existing pattern of one resident local
+    model already used for Qwen3-TTS; `whisper.cpp` as a lighter fallback. No network call, no
+    identity/privacy trade-off, but another model download into `storage/model-cache` and another
+    CPU inference cost alongside Qwen. User leaning toward a local solution as of 2026-08-16.
