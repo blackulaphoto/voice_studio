@@ -23,7 +23,6 @@ function Waveform({ compact = false }) {
 function App() {
   const [page, setPage] = useState("synthesize"), [voices, setVoices] = useState([]), [generations, setGenerations] = useState([]);
   const [engines, setEngines] = useState([]), [device, setDevice] = useState(null), [selectedVoice, setSelectedVoice] = useState("");
-  const [performances, setPerformances] = useState([]), [performanceDialog, setPerformanceDialog] = useState(false);
   const [draft, setDraft] = useState({ text: "", language: "English", speed: 1, engine_id: "qwen3", mode: "quality", performance: null, seed: null, normalize_text: true, engine_settings: {} });
   const [output, setOutput] = useState(null), [loading, setLoading] = useState(true), [generating, setGenerating] = useState(false), [notice, setNotice] = useState(null), [dialog, setDialog] = useState(false);
   const refresh = useCallback(async () => {
@@ -43,10 +42,6 @@ function App() {
     } finally { setLoading(false); }
   }, []);
   useEffect(() => { refresh(); }, [refresh]);
-  useEffect(() => {
-    if (!selectedVoice) return setPerformances([]);
-    fetch(apiUrl(`/voices/${selectedVoice}/performances`)).then(response => response.ok ? response.json() : Promise.reject(new Error("Could not load performances."))).then(data => setPerformances(data.performances)).catch(error => setNotice({ type: "error", message: error.message }));
-  }, [selectedVoice]);
   const engine = engines.find(item => item.id === draft.engine_id) || engines[0];
   const capability = engine?.capabilities || {};
   const voice = voices.find(item => item.id === selectedVoice);
@@ -75,7 +70,7 @@ function App() {
       {notice && <div className={`notice ${notice.type}`}><Icon name={notice.type === "success" ? "check" : "warning"}/><div><span>{notice.message}</span>{notice.detail && <details><summary>Technical detail</summary><code>{notice.detail}</code></details>}</div>{notice.retry && <button className="retry" onClick={refresh} disabled={loading}><Icon name="refresh"/>{loading ? "Checking…" : "Retry"}</button>}<button onClick={() => setNotice(null)} aria-label="Dismiss"><Icon name="close"/></button></div>}
       {loading ? <LoadingState/> : <>
         {page === "synthesize" && (
-          <Synthesize voices={voices} voice={voice} performances={performances} selectedVoice={selectedVoice} setSelectedVoice={value => { setSelectedVoice(value); setDraft(current => ({ ...current, performance: null })); }} draft={draft} setDraft={setDraft} engine={engine} capability={capability} output={output} generating={generating} generate={generate} onNew={() => setDialog(true)} onPerformance={() => setPerformanceDialog(true)} onCompare={() => setPage("compare")}/>
+          <Synthesize voices={voices} voice={voice} selectedVoice={selectedVoice} setSelectedVoice={value => { setSelectedVoice(value); setDraft(current => ({ ...current, performance: null })); }} draft={draft} setDraft={setDraft} engine={engine} capability={capability} output={output} generating={generating} generate={generate} onNew={() => setDialog(true)} onCompare={() => setPage("compare")}/>
         )}
         {page === "voices" && <Voices voices={voices} onNew={() => setDialog(true)} onDelete={removeVoice}/>}
         {page === "generations" && <Generations items={generations} voices={voices} onRestore={restore} onRegenerate={generate} onDelete={removeGeneration}/>}
@@ -83,16 +78,17 @@ function App() {
         {page === "quality" && <QualityLab engine={engine}/>}
         {page === "settings" && <Settings engines={engines} device={device}/>}
       </>}
-    </main>{dialog && <CreateVoice onClose={() => setDialog(false)} onCreated={item => { setVoices(items => [item,...items]); setSelectedVoice(item.id); setDialog(false); setPage("voices"); }}/>} {performanceDialog && voice && <PerformanceDialog voice={voice} performances={performances} onClose={() => setPerformanceDialog(false)} onCreated={item => { setPerformances(items => [...items,item].sort((a,b)=>a.preset.localeCompare(b.preset))); setDraft(current => ({ ...current, performance: item.preset })); }} onDeleted={preset => { setPerformances(items => items.filter(item => item.preset !== preset)); setDraft(current => ({ ...current, performance: current.performance === preset ? null : current.performance })); }}/>}</div>;
+    </main>{dialog && <CreateVoice onClose={() => setDialog(false)} onCreated={item => { setVoices(items => [item,...items]); setSelectedVoice(item.id); setDialog(false); setPage("voices"); }}/>}</div>;
 }
 
-function Synthesize({ voices, voice, performances, selectedVoice, setSelectedVoice, draft, setDraft, engine, capability, output, generating, generate, onNew, onPerformance, onCompare }) {
+function Synthesize({ voices, voice, selectedVoice, setSelectedVoice, draft, setDraft, engine, capability, output, generating, generate, onNew, onCompare }) {
   const languages = capability.supported_languages?.length ? capability.supported_languages : FALLBACK_LANGUAGES;
   const set = (key,value) => setDraft(current => ({ ...current, [key]: value }));
-  return <div className="synth-layout"><section className="score panel"><div className="panel-label"><span>01 / SCORE</span><div className="panel-tools"><button onClick={onPerformance}><Icon name="plus"/> Performance</button><button onClick={onNew}><Icon name="plus"/> New voice</button></div></div>
+  const presets=["neutral","warm","playful","serious","soft","excited","concerned","firm","intimate","tired"];
+  return <div className="synth-layout"><section className="score panel"><div className="panel-label"><span>01 / SCORE</span><button onClick={onNew}><Icon name="plus"/> New voice</button></div>
     {voices.length ? <div className="selector-row"><label>VOICE<select value={selectedVoice} onChange={e => setSelectedVoice(e.target.value)}>{voices.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label>ENGINE<select value={draft.engine_id} onChange={e => set("engine_id",e.target.value)}>{engine && <option value={engine.id}>{engine.name}</option>}</select></label><label>MODE<select value={draft.mode} onChange={e => set("mode",e.target.value)}><option value="quality">Quality · Golden</option><option value="fast">Alternate · Not faster on CPU</option></select></label>{capability.multilingual && <label>LANGUAGE<select value={draft.language} onChange={e => set("language",e.target.value)}>{languages.map(item => <option key={item}>{item}</option>)}</select></label>}</div> : <div className="inline-empty">No voice is patched in. <button onClick={onNew}>Create an authorized voice</button> to begin.</div>}
     {voice && <div className="voice-strip"><button onClick={() => new Audio(apiUrl(`/voices/${voice.id}/preview`)).play()} aria-label={`Preview ${voice.name}`}><Icon name="play"/></button><div><strong>{voice.name}</strong><span>{voice.engine_id} · {formatTime(voice.duration_seconds)} reference · {voice.language}</span></div><Waveform compact/></div>}
-    {voice && <label className="performance-select">PERFORMANCE<select value={draft.performance || ""} onChange={e => set("performance", e.target.value || null)}><option value="">Original delivery</option>{performances.map(item => <option key={item.id} value={item.preset}>{item.preset[0].toUpperCase()+item.preset.slice(1)} · recorded reference</option>)}</select><small>{performances.length ? "Only recorded references are listed; each genuinely changes Qwen's conditioning." : "No performance references recorded yet. Original delivery uses the Golden voice reference."}</small></label>}
+    {voice && <label className="performance-select">PERFORMANCE<select value={draft.performance || ""} onChange={e => set("performance", e.target.value || null)}><option value="">Original delivery</option>{presets.map(item => <option key={item} value={item}>{item[0].toUpperCase()+item.slice(1)} · experimental</option>)}</select><small>No additional voice upload required. These presets use Qwen's supported sampling controls and measured pacing; keep only the ones that sound meaningfully different.</small></label>}
     <label className="editor"><span>SPOKEN TEXT <b>{draft.text.length} / 5,000</b></span><textarea value={draft.text} maxLength="5000" onChange={e => set("text",e.target.value)} placeholder="Write the line exactly as it should be spoken…"/></label>
     <div className="spoken-preview"><span>NORMALIZED PREVIEW</span><p>{draft.text.trim() || "Your spoken-text preview will appear here."}</p></div>
     {capability.speed && <label className="speed">SPEED <b>{Number(draft.speed).toFixed(2)}×</b><input type="range" min="0.5" max="2" step="0.05" value={draft.speed} onChange={e => set("speed",Number(e.target.value))}/></label>}

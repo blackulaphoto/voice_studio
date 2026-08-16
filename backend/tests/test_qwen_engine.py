@@ -57,6 +57,13 @@ def test_fast_uses_qwen_non_streaming_text_path() -> None:
     }
 
 
+def test_engine_forwards_only_supported_sampling_controls() -> None:
+    assert QwenVoiceCloneEngine._generation_kwargs({
+        "_mode": "quality", "temperature": 0.8, "top_p": 0.9,
+        "pace": 0.95, "invented_control": "no",
+    }) == {"temperature": 0.8, "top_p": 0.9}
+
+
 def test_clear_prompt_removes_base_and_performance_conditioning() -> None:
     engine = QwenVoiceCloneEngine("model")
     engine._prompt_cache = {

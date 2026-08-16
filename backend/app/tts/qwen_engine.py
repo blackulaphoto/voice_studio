@@ -96,8 +96,16 @@ class QwenVoiceCloneEngine(TTSEngine):
 
     @staticmethod
     def _generation_kwargs(settings: dict[str, Any] | None) -> dict[str, Any]:
-        mode = (settings or {}).get("_mode", "quality")
-        return {"non_streaming_mode": True} if mode == "fast" else {}
+        settings = settings or {}
+        mode = settings.get("_mode", "quality")
+        kwargs = {"non_streaming_mode": True} if mode == "fast" else {}
+        for name in (
+            "temperature", "top_k", "top_p", "repetition_penalty",
+            "subtalker_temperature", "subtalker_top_k", "subtalker_top_p",
+        ):
+            if name in settings:
+                kwargs[name] = settings[name]
+        return kwargs
 
     def _safe_dtype(self, torch: Any, hardware: HardwareInfo) -> Any:
         if not hardware.accelerator_available:

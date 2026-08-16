@@ -61,7 +61,18 @@ app.add_middleware(
 )
 
 ALLOWED_EXTENSIONS = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac", ".webm"}
-PERFORMANCE_PRESETS = {"neutral", "warm", "playful", "serious", "soft", "excited", "concerned", "firm", "intimate", "tired"}
+PERFORMANCE_PRESETS = {
+    "neutral": {},
+    "warm": {"temperature": 0.85, "top_p": 0.90, "subtalker_temperature": 0.85, "pace": 0.96},
+    "playful": {"temperature": 1.05, "top_k": 60, "subtalker_temperature": 1.05, "pace": 1.03},
+    "serious": {"temperature": 0.72, "top_p": 0.85, "subtalker_temperature": 0.72, "pace": 0.94},
+    "soft": {"temperature": 0.78, "top_p": 0.88, "subtalker_temperature": 0.76, "pace": 0.88},
+    "excited": {"temperature": 1.10, "top_k": 65, "subtalker_temperature": 1.10, "pace": 1.08},
+    "concerned": {"temperature": 0.82, "top_p": 0.88, "subtalker_temperature": 0.80, "pace": 0.92},
+    "firm": {"temperature": 0.68, "top_p": 0.82, "repetition_penalty": 1.08, "subtalker_temperature": 0.68, "pace": 0.96},
+    "intimate": {"temperature": 0.76, "top_p": 0.86, "subtalker_temperature": 0.74, "pace": 0.88},
+    "tired": {"temperature": 0.82, "top_p": 0.90, "subtalker_temperature": 0.78, "pace": 0.82},
+}
 
 
 @app.on_event("startup")
@@ -397,14 +408,12 @@ def synthesize(payload: GenerationRequest) -> GenerationResponse:
     if payload.engine_id != engine.engine_id:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Engine '{payload.engine_id}' is not installed.")
     spoken_text = normalize_text(payload.text.strip(), payload.pronunciation_overrides) if payload.normalize_text else payload.text.strip()
+    if payload.performance and payload.performance not in PERFORMANCE_PRESETS:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unknown performance preset.")
     performance_reference = None
+    performance_settings = PERFORMANCE_PRESETS.get(payload.performance or "neutral", {})
     if payload.performance:
         performance_reference = get_performance_reference(voice["id"], payload.performance)
-        if performance_reference is None:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"The {payload.performance} performance has no recorded reference for this voice.",
-            )
     active_reference_audio = Path(performance_reference["reference_audio_path"]) if performance_reference else Path(voice["reference_audio_path"])
     active_reference_text = performance_reference["reference_text"] if performance_reference else voice["reference_text"]
     prompt_key = f"{voice['id']}:performance:{payload.performance}" if performance_reference else voice["id"]
@@ -416,10 +425,11 @@ def synthesize(payload: GenerationRequest) -> GenerationResponse:
             text=spoken_text,
             language=payload.language,
             output_path=wav_path,
-            settings={**payload.engine_settings, "_mode": payload.mode},
+            settings={**performance_settings, **payload.engine_settings, "_mode": payload.mode},
         )
         synthesis_finished = time.perf_counter()
-        time_stretch(wav_path, payload.speed)
+        effective_speed = payload.speed * float(performance_settings.get("pace", 1.0))
+        time_stretch(wav_path, effective_speed)
         stretch_finished = time.perf_counter()
         exported_mp3 = export_mp3(wav_path, mp3_path)
         export_finished = time.perf_counter()
@@ -448,6 +458,8 @@ def synthesize(payload: GenerationRequest) -> GenerationResponse:
                 "normalize_text": payload.normalize_text,
                 "speed": payload.speed,
                 **payload.engine_settings,
+                "performance_parameters": performance_settings,
+                "effective_speed": effective_speed,
                 **engine.last_effective_settings,
                 "phase_timings": {
                     **engine.last_timings,
