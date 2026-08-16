@@ -16,11 +16,12 @@ Athena Voice Studio repository.
 ## Current checkpoint
 
 - Branch: `main`
-- Local HEAD when this document was written: `d37695b`
-- Local branch is three commits ahead of `origin/main`:
+- Local HEAD before the targeted v2 retune: `729ea07`
+- Local branch was four commits ahead of `origin/main` before the v2 checkpoint:
   - `59824d9 add real performance reference conditioning`
   - `601233f remove performance upload requirement`
   - `d37695b generate phase two performance suite`
+  - `729ea07 add complete project handoff schema`
 - Phase 0 Golden Baseline: complete and user-approved.
 - Phase 1 speed investigation: complete. The alternate Qwen path is not generally faster on CPU.
 - Phase 2 performance presets: ten candidates generated; Warm approved; remaining listening/tuning
@@ -246,12 +247,12 @@ upload. Current exact mappings:
 | Neutral | Golden sampling defaults; pace 1.00 |
 | Warm | temperature .85, top_p .90, subtalker_temperature .85, pace .96 |
 | Playful | temperature 1.05, top_k 60, subtalker_temperature 1.05, pace 1.03 |
-| Serious | temperature .72, top_p .85, subtalker_temperature .72, pace .94 |
-| Soft | temperature .78, top_p .88, subtalker_temperature .76, pace .88 |
+| Serious | temperature .68, top_p .82, repetition_penalty 1.08, subtalker_temperature .68, pace .95 |
+| Soft | temperature .76, top_p .86, repetition_penalty 1.08, subtalker_temperature .74, pace .94 |
 | Excited | temperature 1.10, top_k 65, subtalker_temperature 1.10, pace 1.08 |
 | Concerned | Golden sampling defaults; pace .92 |
 | Firm | temperature .68, top_p .82, repetition_penalty 1.08, subtalker_temperature .68, pace .96 |
-| Intimate | temperature .76, top_p .86, repetition_penalty 1.10, subtalker_temperature .74, pace .88 |
+| Intimate | temperature .78, top_p .88, repetition_penalty 1.08, subtalker_temperature .76, pace .84 |
 | Tired | temperature .82, top_p .90, repetition_penalty 1.10, subtalker_temperature .78, pace .82 |
 
 These are candidates, not scientifically validated emotions. Warm passed user listening. Two
@@ -287,6 +288,30 @@ Next engineer should make only narrow changes first:
 4. Regenerate the exact same acceptance sentence for Serious, Soft, and Intimate only.
 5. Keep old takes for A/B comparison, label replacements `Phase 2 v2`, and ask the user to judge.
 6. Do not regenerate all ten until those three pass.
+
+### Targeted v2 work completed after the initial handoff inventory
+
+The active mappings were changed narrowly:
+
+- Serious v2 now uses temperature .68, top_p .82, repetition penalty 1.08,
+  sub-talker temperature .68, pace .95.
+- Soft v2 uses the parameter family the user perceived as softer: temperature .76, top_p .86,
+  repetition penalty 1.08, sub-talker temperature .74, pace .94.
+- Intimate v2 uses the parameter family the user perceived as more intimate: temperature .78,
+  top_p .88, repetition penalty 1.08, sub-talker temperature .76, pace .84.
+
+Persisted labels and evidence:
+
+| Label | Generation ID | Total audio | Silence analysis at -45 dB |
+|---|---|---:|---|
+| Phase 2 v2 · SERIOUS · targeted retune | `a0fe7c64ab5a4aa094a6640be10a39a6` | 4.02s | 1.09s sentence pause; original 5.90s defect gone |
+| Phase 2 v2 · SOFT · targeted retune | `9bb2fcc9083145cf86d20b44ceb127d5` | 8.57s | 5.58s trailing silence after speech; cleanup still required |
+| Phase 2 v2 · INTIMATE · targeted retune | `5a1c37b8bee843e9bf7f407d3614ea92` | 4.28s | 1.11s sentence pause |
+
+The user should judge Serious v2, the spoken portion of Soft v2, and Intimate v2. Soft v2 is not
+finished because of its trailing silence. The correct fix is outer-edge-only trimming for
+performance generations (or a targeted Soft regeneration), never global internal-silence removal.
+Preserve the old and v2 takes for A/B.
 
 Because Qwen Base has no semantic emotion instruction, exact personal authenticity may not be
 achievable from sampling knobs alone. If targeted retuning plateaus, state that honestly. Optional

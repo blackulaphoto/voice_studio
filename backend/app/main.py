@@ -65,12 +65,12 @@ PERFORMANCE_PRESETS = {
     "neutral": {},
     "warm": {"temperature": 0.85, "top_p": 0.90, "subtalker_temperature": 0.85, "pace": 0.96},
     "playful": {"temperature": 1.05, "top_k": 60, "subtalker_temperature": 1.05, "pace": 1.03},
-    "serious": {"temperature": 0.72, "top_p": 0.85, "subtalker_temperature": 0.72, "pace": 0.94},
-    "soft": {"temperature": 0.78, "top_p": 0.88, "subtalker_temperature": 0.76, "pace": 0.88},
+    "serious": {"temperature": 0.68, "top_p": 0.82, "repetition_penalty": 1.08, "subtalker_temperature": 0.68, "pace": 0.95},
+    "soft": {"temperature": 0.76, "top_p": 0.86, "repetition_penalty": 1.08, "subtalker_temperature": 0.74, "pace": 0.94},
     "excited": {"temperature": 1.10, "top_k": 65, "subtalker_temperature": 1.10, "pace": 1.08},
     "concerned": {"pace": 0.92},
     "firm": {"temperature": 0.68, "top_p": 0.82, "repetition_penalty": 1.08, "subtalker_temperature": 0.68, "pace": 0.96},
-    "intimate": {"temperature": 0.76, "top_p": 0.86, "repetition_penalty": 1.10, "subtalker_temperature": 0.74, "pace": 0.88},
+    "intimate": {"temperature": 0.78, "top_p": 0.88, "repetition_penalty": 1.08, "subtalker_temperature": 0.76, "pace": 0.84},
     "tired": {"temperature": 0.82, "top_p": 0.90, "repetition_penalty": 1.10, "subtalker_temperature": 0.78, "pace": 0.82},
 }
 
