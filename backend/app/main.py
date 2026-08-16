@@ -11,7 +11,17 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from .audio.processing import AudioProcessingError, duration_seconds, export_mp3, preprocess_reference, time_stretch
+from .audio.processing import (
+    AudioProcessingError,
+    blend_breath,
+    duration_seconds,
+    export_mp3,
+    preprocess_reference,
+    rescale_internal_pauses,
+    shape_energy,
+    time_stretch,
+    trim_outer_silence,
+)
 from .config import get_settings
 from .db import (
     create_generation,
@@ -61,18 +71,67 @@ app.add_middleware(
 )
 
 ALLOWED_EXTENSIONS = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac", ".webm"}
+# Native Qwen sampling knobs (temperature/top_k/top_p/repetition_penalty/subtalker_*) drive
+# pitch/rhythm variation the identity-safe way: it's still the model's own generation, nothing
+# reshaped after the fact. pace/pause_scale/energy/breath are post-processing dials applied in
+# backend/app/audio/processing.py (time_stretch, rescale_internal_pauses, shape_energy,
+# blend_breath respectively) — see PROJECT_SCHEMA_AND_HANDOFF.md for the full pipeline order and
+# why each stage must run where it does. All four are clamped server-side in synthesize() so a
+# slider value (or a bad preset edit) cannot produce pathological audio.
 PERFORMANCE_PRESETS = {
     "neutral": {},
-    "warm": {"temperature": 0.85, "top_p": 0.90, "subtalker_temperature": 0.85, "pace": 0.96},
-    "playful": {"temperature": 1.05, "top_k": 60, "subtalker_temperature": 1.05, "pace": 1.03},
-    "serious": {"temperature": 0.68, "top_p": 0.82, "repetition_penalty": 1.08, "subtalker_temperature": 0.68, "pace": 0.95},
-    "soft": {"temperature": 0.76, "top_p": 0.86, "repetition_penalty": 1.08, "subtalker_temperature": 0.74, "pace": 0.94},
-    "excited": {"temperature": 1.10, "top_k": 65, "subtalker_temperature": 1.10, "pace": 1.08},
-    "concerned": {"pace": 0.92},
-    "firm": {"temperature": 0.68, "top_p": 0.82, "repetition_penalty": 1.08, "subtalker_temperature": 0.68, "pace": 0.96},
-    "intimate": {"temperature": 0.78, "top_p": 0.88, "repetition_penalty": 1.08, "subtalker_temperature": 0.76, "pace": 0.84},
-    "tired": {"temperature": 0.82, "top_p": 0.90, "repetition_penalty": 1.10, "subtalker_temperature": 0.78, "pace": 0.82},
+    "warm": {
+        "temperature": 0.85, "top_p": 0.90, "subtalker_temperature": 0.85,
+        "pace": 0.96, "pause_scale": 1.1, "energy": 1.05,
+    },
+    "playful": {
+        "temperature": 1.25, "top_k": 80, "top_p": 1.0, "subtalker_temperature": 1.20, "subtalker_top_k": 80,
+        "pace": 1.08, "pause_scale": 0.70, "energy": 1.35,
+    },
+    "serious": {
+        "temperature": 0.55, "top_p": 0.75, "repetition_penalty": 1.10, "subtalker_temperature": 0.55,
+        "pace": 0.90, "pause_scale": 1.60, "energy": 0.75,
+    },
+    "soft": {
+        "temperature": 0.72, "top_p": 0.85, "repetition_penalty": 1.06, "subtalker_temperature": 0.70,
+        "pace": 0.92, "pause_scale": 1.25, "energy": 0.78, "breath": 0.20,
+    },
+    "excited": {
+        "temperature": 1.30, "top_k": 85, "top_p": 1.0, "subtalker_temperature": 1.28, "subtalker_top_k": 85,
+        "pace": 1.15, "pause_scale": 0.55, "energy": 1.50,
+    },
+    "concerned": {
+        "temperature": 0.78, "top_p": 0.85, "repetition_penalty": 1.08, "subtalker_temperature": 0.75,
+        "pace": 0.90, "pause_scale": 1.35, "energy": 0.85, "breath": 0.10,
+    },
+    "firm": {
+        "temperature": 0.60, "top_p": 0.78, "repetition_penalty": 1.08, "subtalker_temperature": 0.58,
+        "pace": 1.00, "pause_scale": 0.80, "energy": 1.20,
+    },
+    "intimate": {
+        # repetition_penalty was 1.05 (golden default, the weakest in this whole preset set) and
+        # ran away for 8+ minutes on the Phase 3 evaluation sentence — low temperature + weak
+        # repetition_penalty is a classic degenerate-repeat-loop combo. Raised to 1.09, matching
+        # the safety-margin pattern already used by every other low-temperature preset here.
+        "temperature": 0.70, "top_p": 0.85, "repetition_penalty": 1.09, "subtalker_temperature": 0.68,
+        "pace": 0.78, "pause_scale": 1.80, "energy": 0.62, "breath": 0.40,
+    },
+    "tired": {
+        "temperature": 0.80, "top_p": 0.88, "repetition_penalty": 1.10, "subtalker_temperature": 0.76,
+        "pace": 0.76, "pause_scale": 1.50, "energy": 0.65, "breath": 0.15,
+    },
 }
+DELIVERY_BOUNDS = {
+    "pace": (0.5, 1.6),
+    "pause_scale": (0.3, 3.0),
+    "energy": (0.5, 1.8),
+    "breath": (0.0, 1.0),
+}
+
+
+def _clamped_delivery_dial(settings: dict, name: str, default: float) -> float:
+    low, high = DELIVERY_BOUNDS[name]
+    return max(low, min(float(settings.get(name, default)), high))
 
 
 @app.on_event("startup")
@@ -184,6 +243,12 @@ def get_engines() -> EngineListResponse:
 @app.get(f"{settings.api_prefix}/models", response_model=EngineListResponse)
 def get_models() -> EngineListResponse:
     return get_engines()
+
+
+@app.get(f"{settings.api_prefix}/performance-presets")
+def get_performance_presets() -> dict:
+    """Preset defaults plus slider bounds, so the UI never duplicates PERFORMANCE_PRESETS."""
+    return {"presets": PERFORMANCE_PRESETS, "bounds": DELIVERY_BOUNDS}
 
 
 @app.get(f"{settings.api_prefix}/voices", response_model=VoiceListResponse)
@@ -412,11 +477,16 @@ def synthesize(payload: GenerationRequest) -> GenerationResponse:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unknown performance preset.")
     performance_reference = None
     performance_settings = PERFORMANCE_PRESETS.get(payload.performance or "neutral", {})
+    merged_settings = {**performance_settings, **payload.engine_settings}
     if payload.performance:
         performance_reference = get_performance_reference(voice["id"], payload.performance)
     active_reference_audio = Path(performance_reference["reference_audio_path"]) if performance_reference else Path(voice["reference_audio_path"])
     active_reference_text = performance_reference["reference_text"] if performance_reference else voice["reference_text"]
     prompt_key = f"{voice['id']}:performance:{payload.performance}" if performance_reference else voice["id"]
+    pace = _clamped_delivery_dial(merged_settings, "pace", 1.0)
+    pause_scale = _clamped_delivery_dial(merged_settings, "pause_scale", 1.0)
+    energy = _clamped_delivery_dial(merged_settings, "energy", 1.0)
+    breath = _clamped_delivery_dial(merged_settings, "breath", 0.0)
     try:
         engine.synthesize(
             voice_id=prompt_key,
@@ -425,12 +495,26 @@ def synthesize(payload: GenerationRequest) -> GenerationResponse:
             text=spoken_text,
             language=payload.language,
             output_path=wav_path,
-            settings={**performance_settings, **payload.engine_settings, "_mode": payload.mode},
+            settings={**merged_settings, "_mode": payload.mode},
         )
         synthesis_finished = time.perf_counter()
-        effective_speed = payload.speed * float(performance_settings.get("pace", 1.0))
+        # Order matters: trim edges before pause-rescaling so every detected gap is genuinely
+        # internal; rescale pauses before the uniform tempo change so pace still scales the
+        # reshaped gaps along with speech; blend breath only after both silence-detection
+        # passes, since a noise floor would defeat them; shape_energy runs last so its
+        # loudnorm pass sets the final envelope including any added breath texture. See
+        # PROJECT_SCHEMA_AND_HANDOFF.md for the full rationale.
+        trimmed_seconds = trim_outer_silence(wav_path)
+        trim_finished = time.perf_counter()
+        pause_seconds_added = rescale_internal_pauses(wav_path, pause_scale=pause_scale)
+        pause_finished = time.perf_counter()
+        effective_speed = payload.speed * pace
         time_stretch(wav_path, effective_speed)
         stretch_finished = time.perf_counter()
+        blend_breath(wav_path, breath)
+        breath_finished = time.perf_counter()
+        shape_energy(wav_path, energy)
+        energy_finished = time.perf_counter()
         exported_mp3 = export_mp3(wav_path, mp3_path)
         export_finished = time.perf_counter()
         measured_duration = duration_seconds(wav_path)
@@ -459,12 +543,23 @@ def synthesize(payload: GenerationRequest) -> GenerationResponse:
                 "speed": payload.speed,
                 **payload.engine_settings,
                 "performance_parameters": performance_settings,
+                # Flat (not nested) so restoring/regenerating a saved generation — which sends
+                # this whole settings dict back as engine_settings — reproduces the exact same
+                # pace/pause_scale/energy/breath rather than silently falling back to the
+                # preset's defaults for them.
+                "pace": pace, "pause_scale": pause_scale, "energy": energy, "breath": breath,
                 "effective_speed": effective_speed,
+                "outer_trim_seconds_removed": trimmed_seconds,
+                "pause_seconds_added": pause_seconds_added,
                 **engine.last_effective_settings,
                 "phase_timings": {
                     **engine.last_timings,
-                    "post_speed_seconds": round(stretch_finished - synthesis_finished, 3),
-                    "mp3_export_seconds": round(export_finished - stretch_finished, 3),
+                    "outer_trim_seconds": round(trim_finished - synthesis_finished, 3),
+                    "pause_rescale_seconds": round(pause_finished - trim_finished, 3),
+                    "post_speed_seconds": round(stretch_finished - pause_finished, 3),
+                    "breath_seconds": round(breath_finished - stretch_finished, 3),
+                    "energy_shape_seconds": round(energy_finished - breath_finished, 3),
+                    "mp3_export_seconds": round(export_finished - energy_finished, 3),
                     "duration_probe_seconds": round(probe_finished - export_finished, 3),
                     "request_total_seconds": elapsed,
                 },

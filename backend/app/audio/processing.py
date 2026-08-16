@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import json
@@ -134,6 +135,185 @@ def preprocess_reference(samples: list[Path], output_path: Path) -> float:
     args.extend(["-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(output_path)])
     _run(args)
     return duration_seconds(output_path)
+
+
+def trim_outer_silence(
+    wav_path: Path, *, threshold_db: float = -60.0, start_duration: float = 0.20, end_duration: float = 0.35
+) -> float:
+    """Trim only leading/trailing silence from a generated WAV in place.
+
+    Uses stop_periods=0 on both the forward and reversed pass, so internal pauses
+    (intentional delivery timing between sentences) are never touched. Threshold matches
+    the proven-safe value already used for voice references in preprocess_reference.
+
+    Critically, start_silence is set equal to start_duration on each pass. FFmpeg's
+    silenceremove needs to observe start_duration worth of continuous non-silence before
+    it trusts audio has resumed, and unconditionally discards (start_duration - start_silence)
+    even when there was no silence at all to begin with. An earlier version with a smaller
+    start_silence than start_duration paid that forced "warm-up cost" on every generation,
+    clipping into real speech regardless of threshold (e.g. the "B" in "Brandon", the
+    trailing "g" in "something"). Matching them makes the forced loss ~0 on clean audio.
+    Returns the number of seconds removed so callers can log it as honest evidence.
+    """
+    ffmpeg = _require_ffmpeg()
+    before = duration_seconds(wav_path)
+    temporary = wav_path.with_suffix(".trimmed.wav")
+    filters = (
+        f"silenceremove=start_periods=1:start_duration={start_duration}:start_threshold={threshold_db}dB:"
+        f"start_silence={start_duration}:stop_periods=0,"
+        "areverse,"
+        f"silenceremove=start_periods=1:start_duration={end_duration}:start_threshold={threshold_db}dB:"
+        f"start_silence={end_duration}:stop_periods=0,"
+        "areverse"
+    )
+    _run([ffmpeg, "-y", "-i", str(wav_path), "-af", filters, "-c:a", "pcm_s16le", str(temporary)])
+    temporary.replace(wav_path)
+    after = duration_seconds(wav_path)
+    return round(max(before - after, 0.0), 3)
+
+
+def _detect_silences(path: Path, *, threshold_db: float, min_duration: float) -> list[tuple[float, float]]:
+    """Return closed (start, end) silence intervals via ffmpeg's silencedetect.
+
+    Intervals still open at end-of-file (a silence_start with no matching silence_end) are
+    dropped, since callers only want fully-bounded gaps.
+    """
+    ffmpeg = _require_ffmpeg()
+    result = subprocess.run(
+        [ffmpeg, "-hide_banner", "-nostats", "-i", str(path), "-af",
+         f"silencedetect=noise={threshold_db}dB:duration={min_duration}", "-f", "null", "NUL"],
+        capture_output=True, text=True,
+    )
+    log = result.stderr
+    starts = [float(value) for value in re.findall(r"silence_start:\s*(-?\d+(?:\.\d+)?)", log)]
+    ends = [float(value) for value in re.findall(r"silence_end:\s*(-?\d+(?:\.\d+)?)", log)]
+    return list(zip(starts, ends))
+
+
+def rescale_internal_pauses(
+    wav_path: Path, *, pause_scale: float, threshold_db: float = -45.0, min_gap: float = 0.15
+) -> float:
+    """Stretch or compress only the internal silence gaps of a WAV; speech is untouched.
+
+    Must run after trim_outer_silence, so every detected gap is genuinely internal (never at
+    the very start or unclosed at end-of-file — both are defensively excluded again here).
+    Rebuilds the file as alternating speech/silence segments, replacing each gap with
+    pause_scale times its original duration of true digital silence. Each new gap is bounded
+    to [0.02s, min(4x original, 4.0s)] so a slider value cannot produce pathological silence.
+    Returns the net seconds added (positive) or removed (negative).
+    """
+    if abs(pause_scale - 1.0) < 1e-6:
+        return 0.0
+    ffmpeg = _require_ffmpeg()
+    total = duration_seconds(wav_path)
+    gaps = _detect_silences(wav_path, threshold_db=threshold_db, min_duration=min_gap)
+    internal = [(start, end) for start, end in gaps if start > 0.01 and end < total - 0.01]
+    if not internal:
+        return 0.0
+
+    targets = [max(0.02, min((end - start) * pause_scale, (end - start) * 4.0, 4.0)) for start, end in internal]
+    total_silence_needed = sum(targets) + 1.0
+
+    filter_stages: list[str] = []
+    concat_labels: list[str] = []
+    cursor = 0.0
+    silence_cursor = 0.0
+    segment = 0
+
+    for (start, end), target_gap in zip(internal, targets):
+        if cursor < start - 1e-6:
+            label = f"sp{segment}"
+            segment += 1
+            filter_stages.append(f"[0:a]atrim={cursor:.6f}:{start:.6f},asetpts=PTS-STARTPTS[{label}]")
+            concat_labels.append(f"[{label}]")
+        silence_label = f"si{segment}"
+        segment += 1
+        filter_stages.append(
+            f"[1:a]atrim={silence_cursor:.6f}:{silence_cursor + target_gap:.6f},"
+            f"asetpts=PTS-STARTPTS[{silence_label}]"
+        )
+        concat_labels.append(f"[{silence_label}]")
+        silence_cursor += target_gap
+        cursor = end
+
+    if cursor < total - 1e-6:
+        label = f"sp{segment}"
+        filter_stages.append(f"[0:a]atrim={cursor:.6f}:{total:.6f},asetpts=PTS-STARTPTS[{label}]")
+        concat_labels.append(f"[{label}]")
+
+    filter_stages.append(f"{''.join(concat_labels)}concat=n={len(concat_labels)}:v=0:a=1[out]")
+
+    temporary = wav_path.with_suffix(".paused.wav")
+    _run([
+        ffmpeg, "-y",
+        "-i", str(wav_path),
+        "-f", "lavfi", "-i", f"anullsrc=channel_layout=mono:sample_rate=24000:duration={total_silence_needed:.3f}",
+        "-filter_complex", ";".join(filter_stages),
+        "-map", "[out]",
+        "-c:a", "pcm_s16le",
+        str(temporary),
+    ])
+    temporary.replace(wav_path)
+    after = duration_seconds(wav_path)
+    return round(after - total, 3)
+
+
+def shape_energy(wav_path: Path, energy: float) -> None:
+    """Reshape the overall loudness contour in place via a second loudnorm pass.
+
+    energy=1.0 is neutral (skipped). Values below 1 narrow the target loudness range for a
+    flatter, calmer contour; values above 1 widen it and lift the target level for a livelier,
+    more dynamic one. Uses ffmpeg's EBU R128 loudnorm filter — the same proven, single-pass
+    filter already used for reference preprocessing — rather than a hand-tuned compressor
+    curve, since loudnorm is not prone to audible pumping artifacts.
+    """
+    if abs(energy - 1.0) < 1e-6:
+        return
+    energy = max(0.5, min(energy, 1.8))
+    ffmpeg = _require_ffmpeg()
+    lra = round(3.0 + (energy - 0.5) / 1.3 * 9.0, 2)
+    integrated = round(-22.0 + (energy - 0.5) / 1.3 * 8.0, 2)
+    temporary = wav_path.with_suffix(".energy.wav")
+    _run([
+        ffmpeg, "-y", "-i", str(wav_path),
+        "-af", f"loudnorm=I={integrated}:TP=-1.5:LRA={lra}",
+        "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le",
+        str(temporary),
+    ])
+    temporary.replace(wav_path)
+
+
+def blend_breath(wav_path: Path, amount: float) -> None:
+    """Blend a very low-level, band-limited noise bed under the speech, in place.
+
+    Experimental: approximates aspiration/air texture, not a literal breath model. amount=0
+    is a no-op. Noise is confined to roughly 750 Hz-5.25 kHz (the fricative/breath range) and
+    mixed far below the speech (-34 dB at amount=0, -22 dB at amount=1), so at low amounts it
+    should read as air/warmth rather than hiss. Must run after trim_outer_silence and
+    rescale_internal_pauses — the added noise floor would otherwise defeat their silence
+    detection. The user must judge whether this sounds natural or synthetic by ear.
+    """
+    if amount <= 0.0:
+        return
+    amount = max(0.0, min(amount, 1.0))
+    ffmpeg = _require_ffmpeg()
+    total = duration_seconds(wav_path)
+    noise_gain_db = -34.0 + (amount * 12.0)
+    temporary = wav_path.with_suffix(".breath.wav")
+    filter_complex = (
+        f"[1:a]bandpass=f=3000:width_type=h:w=4500,volume={noise_gain_db}dB[breath];"
+        "[0:a][breath]amix=inputs=2:duration=first:dropout_transition=0[out]"
+    )
+    _run([
+        ffmpeg, "-y",
+        "-i", str(wav_path),
+        "-f", "lavfi", "-i", f"anoisesrc=color=pink:amplitude=1:duration={total + 0.5:.3f}",
+        "-filter_complex", filter_complex,
+        "-map", "[out]",
+        "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le",
+        str(temporary),
+    ])
+    temporary.replace(wav_path)
 
 
 def time_stretch(wav_path: Path, speed: float) -> None:

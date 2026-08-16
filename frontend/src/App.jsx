@@ -3,6 +3,21 @@ import "./styles.css";
 
 const API = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000/api";
 const FALLBACK_LANGUAGES = ["English", "Auto", "Chinese", "Japanese", "Korean", "German", "French", "Russian", "Portuguese", "Spanish", "Italian"];
+// Qwen's own sampling defaults (see backend/app/tts/qwen_engine.py) — shown as slider
+// positions for "Original delivery" / neutral, where the request sends no overrides at all.
+const NEUTRAL_DELIVERY = { temperature: 0.9, top_k: 50, top_p: 1.0, repetition_penalty: 1.05, subtalker_temperature: 0.9, pace: 1.0, pause_scale: 1.0, energy: 1.0, breath: 0.0 };
+const DELIVERY_GROUP_HEADINGS = { native: "Native sampling (model's own generation)", post: "Post-processing (applied after generation)" };
+const DELIVERY_SLIDERS = [
+  { key: "temperature", label: "Temperature", group: "native", min: 0.3, max: 1.6, step: 0.01 },
+  { key: "top_p", label: "Top P", group: "native", min: 0.5, max: 1.0, step: 0.01 },
+  { key: "top_k", label: "Top K", group: "native", min: 10, max: 100, step: 1 },
+  { key: "repetition_penalty", label: "Repetition penalty", group: "native", min: 0.9, max: 1.3, step: 0.01 },
+  { key: "subtalker_temperature", label: "Sub-talker temperature", group: "native", min: 0.3, max: 1.6, step: 0.01 },
+  { key: "pace", label: "Pace", group: "post", min: 0.5, max: 1.6, step: 0.01, suffix: "×" },
+  { key: "pause_scale", label: "Pause length", group: "post", min: 0.3, max: 3.0, step: 0.05, suffix: "×" },
+  { key: "energy", label: "Energy / dynamics", group: "post", min: 0.5, max: 1.8, step: 0.01 },
+  { key: "breath", label: "Breath texture (experimental)", group: "post", min: 0.0, max: 1.0, step: 0.01 },
+];
 const apiUrl = path => `${API}${path}`;
 const assetUrl = path => path?.startsWith("http") ? path : `${new URL(API).origin}${path}`;
 const formatDate = value => new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(new Date(value));
@@ -25,13 +40,15 @@ function App() {
   const [engines, setEngines] = useState([]), [device, setDevice] = useState(null), [selectedVoice, setSelectedVoice] = useState("");
   const [draft, setDraft] = useState({ text: "", language: "English", speed: 1, engine_id: "qwen3", mode: "quality", performance: null, seed: null, normalize_text: true, engine_settings: {} });
   const [output, setOutput] = useState(null), [loading, setLoading] = useState(true), [generating, setGenerating] = useState(false), [notice, setNotice] = useState(null), [dialog, setDialog] = useState(false);
+  const [presetLibrary, setPresetLibrary] = useState({ presets: {}, bounds: {} });
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const responses = await Promise.all(["/voices", "/generations", "/health", "/engines"].map(path => fetch(apiUrl(path))));
+      const responses = await Promise.all(["/voices", "/generations", "/health", "/engines", "/performance-presets"].map(path => fetch(apiUrl(path))));
       if (responses.some(response => !response.ok)) throw new Error("The local voice service did not return a complete status response.");
-      const [voiceData, generationData, healthData, engineData] = await Promise.all(responses.map(response => response.json()));
+      const [voiceData, generationData, healthData, engineData, presetData] = await Promise.all(responses.map(response => response.json()));
       setVoices(voiceData.voices); setGenerations(generationData.generations); setDevice(healthData.device); setEngines(engineData.engines);
+      setPresetLibrary(presetData);
       setSelectedVoice(current => current || voiceData.voices[0]?.id || "");
       setDraft(current => ({ ...current, engine_id: engineData.engines[0]?.id || current.engine_id }));
     } catch (error) {
@@ -70,7 +87,7 @@ function App() {
       {notice && <div className={`notice ${notice.type}`}><Icon name={notice.type === "success" ? "check" : "warning"}/><div><span>{notice.message}</span>{notice.detail && <details><summary>Technical detail</summary><code>{notice.detail}</code></details>}</div>{notice.retry && <button className="retry" onClick={refresh} disabled={loading}><Icon name="refresh"/>{loading ? "Checking…" : "Retry"}</button>}<button onClick={() => setNotice(null)} aria-label="Dismiss"><Icon name="close"/></button></div>}
       {loading ? <LoadingState/> : <>
         {page === "synthesize" && (
-          <Synthesize voices={voices} voice={voice} selectedVoice={selectedVoice} setSelectedVoice={value => { setSelectedVoice(value); setDraft(current => ({ ...current, performance: null })); }} draft={draft} setDraft={setDraft} engine={engine} capability={capability} output={output} generating={generating} generate={generate} onNew={() => setDialog(true)} onCompare={() => setPage("compare")}/>
+          <Synthesize voices={voices} voice={voice} selectedVoice={selectedVoice} setSelectedVoice={value => { setSelectedVoice(value); setDraft(current => ({ ...current, performance: null })); }} draft={draft} setDraft={setDraft} engine={engine} capability={capability} presetLibrary={presetLibrary} output={output} generating={generating} generate={generate} onNew={() => setDialog(true)} onCompare={() => setPage("compare")}/>
         )}
         {page === "voices" && <Voices voices={voices} onNew={() => setDialog(true)} onDelete={removeVoice}/>}
         {page === "generations" && <Generations items={generations} voices={voices} onRestore={restore} onRegenerate={generate} onDelete={removeGeneration}/>}
@@ -81,20 +98,57 @@ function App() {
     </main>{dialog && <CreateVoice onClose={() => setDialog(false)} onCreated={item => { setVoices(items => [item,...items]); setSelectedVoice(item.id); setDialog(false); setPage("voices"); }}/>}</div>;
 }
 
-function Synthesize({ voices, voice, selectedVoice, setSelectedVoice, draft, setDraft, engine, capability, output, generating, generate, onNew, onCompare }) {
+function Synthesize({ voices, voice, selectedVoice, setSelectedVoice, draft, setDraft, engine, capability, presetLibrary, output, generating, generate, onNew, onCompare }) {
   const languages = capability.supported_languages?.length ? capability.supported_languages : FALLBACK_LANGUAGES;
   const set = (key,value) => setDraft(current => ({ ...current, [key]: value }));
   const presets=["neutral","warm","playful","serious","soft","excited","concerned","firm","intimate","tired"];
+  const selectPerformance = value => setDraft(current => ({
+    ...current,
+    performance: value || null,
+    // Load the preset's exact values into the sliders so they show a meaningful starting
+    // point and are immediately editable; the backend merges engine_settings over the
+    // preset regardless, so sending them back verbatim is harmless.
+    engine_settings: value ? { ...(presetLibrary.presets?.[value] || {}) } : {},
+  }));
   return <div className="synth-layout"><section className="score panel"><div className="panel-label"><span>01 / SCORE</span><button onClick={onNew}><Icon name="plus"/> New voice</button></div>
     {voices.length ? <div className="selector-row"><label>VOICE<select value={selectedVoice} onChange={e => setSelectedVoice(e.target.value)}>{voices.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label>ENGINE<select value={draft.engine_id} onChange={e => set("engine_id",e.target.value)}>{engine && <option value={engine.id}>{engine.name}</option>}</select></label><label>MODE<select value={draft.mode} onChange={e => set("mode",e.target.value)}><option value="quality">Quality · Golden</option><option value="fast">Alternate · Not faster on CPU</option></select></label>{capability.multilingual && <label>LANGUAGE<select value={draft.language} onChange={e => set("language",e.target.value)}>{languages.map(item => <option key={item}>{item}</option>)}</select></label>}</div> : <div className="inline-empty">No voice is patched in. <button onClick={onNew}>Create an authorized voice</button> to begin.</div>}
     {voice && <div className="voice-strip"><button onClick={() => new Audio(apiUrl(`/voices/${voice.id}/preview`)).play()} aria-label={`Preview ${voice.name}`}><Icon name="play"/></button><div><strong>{voice.name}</strong><span>{voice.engine_id} · {formatTime(voice.duration_seconds)} reference · {voice.language}</span></div><Waveform compact/></div>}
-    {voice && <label className="performance-select">PERFORMANCE<select value={draft.performance || ""} onChange={e => set("performance", e.target.value || null)}><option value="">Original delivery</option>{presets.map(item => <option key={item} value={item}>{item[0].toUpperCase()+item.slice(1)} · experimental</option>)}</select><small>No additional voice upload required. These presets use Qwen's supported sampling controls and measured pacing; keep only the ones that sound meaningfully different.</small></label>}
+    {voice && <label className="performance-select">PERFORMANCE<select value={draft.performance || ""} onChange={e => selectPerformance(e.target.value)}><option value="">Original delivery</option>{presets.map(item => <option key={item} value={item}>{item[0].toUpperCase()+item.slice(1)} · experimental</option>)}</select><small>No additional voice upload required. Picking a preset loads its values into Delivery controls below — nudge any slider to go beyond the preset.</small></label>}
     <label className="editor"><span>SPOKEN TEXT <b>{draft.text.length} / 5,000</b></span><textarea value={draft.text} maxLength="5000" onChange={e => set("text",e.target.value)} placeholder="Write the line exactly as it should be spoken…"/></label>
     <div className="spoken-preview"><span>NORMALIZED PREVIEW</span><p>{draft.text.trim() || "Your spoken-text preview will appear here."}</p></div>
     {capability.speed && <label className="speed">SPEED <b>{Number(draft.speed).toFixed(2)}×</b><input type="range" min="0.5" max="2" step="0.05" value={draft.speed} onChange={e => set("speed",Number(e.target.value))}/></label>}
+    {voice && <DeliveryControls draft={draft} setDraft={setDraft} presetLibrary={presetLibrary}/>}
     {(capability.seed || capability.style || capability.emotion || capability.temperature) && <details><summary>Engine-supported advanced controls</summary><div className="advanced">{capability.seed && <label>Seed<input type="number" value={draft.seed ?? ""} onChange={e => set("seed", e.target.value ? Number(e.target.value) : null)}/></label>}</div></details>}
     <button className="generate" onClick={() => generate()} disabled={generating || !voices.length || !draft.text.trim()}>{generating ? <><span className="spinner"/> RENDERING TAKE</> : <><Icon name="wave"/> GENERATE {draft.mode === "quality" ? "QUALITY" : "ALTERNATE"} SPEECH</>}</button><p className="truth-note">{draft.mode === "quality" ? "QUALITY preserves the approved Golden configuration." : "ALTERNATE uses Qwen's non-streaming text path. Benchmarks found it is not faster on this CPU."}</p>
   </section><OutputDeck output={output} voices={voices} onRegenerate={() => generate(output)} onCompare={onCompare}/></div>;
+}
+
+function DeliveryControls({ draft, setDraft, presetLibrary }) {
+  const current = key => draft.engine_settings?.[key] ?? NEUTRAL_DELIVERY[key];
+  const setDial = (key, value) => setDraft(d => ({ ...d, engine_settings: { ...d.engine_settings, [key]: value } }));
+  const resetToPreset = () => setDraft(d => ({
+    ...d,
+    engine_settings: d.performance ? { ...(presetLibrary.presets?.[d.performance] || {}) } : {},
+  }));
+  let lastGroup = null;
+  return <details className="delivery-controls" open><summary>Delivery controls — freeform sliders<small>Every slider overrides the selected preset; move any of them to go beyond the ten built-ins.</small></summary>
+    <div className="advanced delivery-grid">
+      {DELIVERY_SLIDERS.map(({ key, label, group, min, max, step, suffix }) => {
+        const showHeading = group !== lastGroup;
+        lastGroup = group;
+        const value = current(key);
+        return <div key={key} className="delivery-slider-wrap">
+          {showHeading && <p className="delivery-group-heading">{DELIVERY_GROUP_HEADINGS[group]}</p>}
+          <label className="delivery-slider">
+            <span>{label} <b>{Number(value).toFixed(key === "top_k" ? 0 : 2)}{suffix || ""}</b></span>
+            <input type="range" min={min} max={max} step={step} value={value} onChange={e => setDial(key, Number(e.target.value))}/>
+          </label>
+        </div>;
+      })}
+    </div>
+    <button type="button" className="reset-delivery" onClick={resetToPreset}>Reset to {draft.performance ? `${draft.performance} preset` : "original delivery"}</button>
+    <p className="truth-note">Pace/pause length/energy are post-processing (fully identity-safe). Breath is experimental noise texture — judge it by ear and set it back to 0 if it sounds synthetic rather than natural.</p>
+  </details>;
 }
 
 function OutputDeck({ output, voices, onRegenerate, onCompare }) {
