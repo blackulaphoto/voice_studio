@@ -59,6 +59,19 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (voice_id) REFERENCES voices(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS performance_references (
+                id TEXT PRIMARY KEY,
+                voice_id TEXT NOT NULL,
+                preset TEXT NOT NULL,
+                reference_audio_path TEXT NOT NULL,
+                original_sample_path TEXT NOT NULL,
+                reference_text TEXT NOT NULL,
+                duration_seconds REAL NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE (voice_id, preset),
+                FOREIGN KEY (voice_id) REFERENCES voices(id) ON DELETE CASCADE
+            );
             """
         )
         _ensure_columns(conn, "voices", {
@@ -279,6 +292,62 @@ def delete_generation(generation_id: str) -> dict[str, Any] | None:
     with connection() as conn:
         conn.execute("DELETE FROM generations WHERE id = ?", (generation_id,))
     return generation
+
+
+def list_performance_references(voice_id: str | None = None) -> list[dict[str, Any]]:
+    with connection() as conn:
+        if voice_id is None:
+            rows = conn.execute(
+                "SELECT * FROM performance_references ORDER BY voice_id, preset"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM performance_references WHERE voice_id = ? ORDER BY preset",
+                (voice_id,),
+            ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_performance_reference(voice_id: str, preset: str) -> dict[str, Any] | None:
+    with connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM performance_references WHERE voice_id = ? AND preset = ?",
+            (voice_id, preset),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def create_performance_reference(
+    *, reference_id: str, voice_id: str, preset: str, reference_audio_path: Path,
+    original_sample_path: Path, reference_text: str, duration_seconds: float,
+) -> dict[str, Any]:
+    with connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO performance_references (
+                id, voice_id, preset, reference_audio_path, original_sample_path,
+                reference_text, duration_seconds, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (reference_id, voice_id, preset, str(reference_audio_path), str(original_sample_path),
+             reference_text, duration_seconds, utc_now()),
+        )
+    reference = get_performance_reference(voice_id, preset)
+    if reference is None:
+        raise RuntimeError("Performance reference was not persisted.")
+    return reference
+
+
+def delete_performance_reference(voice_id: str, preset: str) -> dict[str, Any] | None:
+    reference = get_performance_reference(voice_id, preset)
+    if reference is None:
+        return None
+    with connection() as conn:
+        conn.execute(
+            "DELETE FROM performance_references WHERE voice_id = ? AND preset = ?",
+            (voice_id, preset),
+        )
+    return reference
 
 
 def update_generation_label(generation_id: str, benchmark_label: str | None) -> dict[str, Any] | None:

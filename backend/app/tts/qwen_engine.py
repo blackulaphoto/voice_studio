@@ -183,7 +183,8 @@ class QwenVoiceCloneEngine(TTSEngine):
 
     def clear_prompt(self, voice_id: str) -> None:
         with self._lock:
-            self._prompt_cache.pop(voice_id, None)
+            for key in [key for key in self._prompt_cache if key == voice_id or key.startswith(f"{voice_id}:")]:
+                self._prompt_cache.pop(key, None)
 
     def _prompt_for(
         self, voice_id: str, reference_audio: Path, reference_text: str | None

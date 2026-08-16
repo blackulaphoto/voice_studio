@@ -57,6 +57,15 @@ def test_fast_uses_qwen_non_streaming_text_path() -> None:
     }
 
 
+def test_clear_prompt_removes_base_and_performance_conditioning() -> None:
+    engine = QwenVoiceCloneEngine("model")
+    engine._prompt_cache = {
+        "voice": "base", "voice:performance:warm": "warm", "other": "untouched"
+    }
+    engine.clear_prompt("voice")
+    assert engine._prompt_cache == {"other": "untouched"}
+
+
 def test_complete_local_snapshot_enables_offline_loading(monkeypatch, tmp_path: Path) -> None:
     model_id = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
     snapshot = tmp_path / "hub" / "models--Qwen--Qwen3-TTS-12Hz-0.6B-Base" / "snapshots" / "revision"

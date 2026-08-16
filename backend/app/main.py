@@ -15,14 +15,18 @@ from .audio.processing import AudioProcessingError, duration_seconds, export_mp3
 from .config import get_settings
 from .db import (
     create_generation,
+    create_performance_reference,
     create_voice,
     delete_generation,
     delete_voice,
+    delete_performance_reference,
     get_generation,
     get_voice,
+    get_performance_reference,
     init_db,
     list_generations,
     list_voices,
+    list_performance_references,
     update_voice,
     update_generation_label,
 )
@@ -39,6 +43,8 @@ from .schemas import (
     VoiceListResponse,
     VoiceProfile,
     VoicePatchRequest,
+    PerformanceReference,
+    PerformanceReferenceList,
 )
 from .text.normalization import normalize_text
 from .tts.qwen_engine import EngineUnavailableError, QwenVoiceCloneEngine
@@ -55,6 +61,7 @@ app.add_middleware(
 )
 
 ALLOWED_EXTENSIONS = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac", ".webm"}
+PERFORMANCE_PRESETS = {"neutral", "warm", "playful", "serious", "soft", "excited", "concerned", "firm", "intimate", "tired"}
 
 
 @app.on_event("startup")
@@ -118,6 +125,15 @@ def _generation_response(generation: dict) -> GenerationResponse:
         settings=generation.get("settings", {}),
         reference_set=generation.get("reference_set", []),
         benchmark_label=generation.get("benchmark_label"),
+    )
+
+
+def _performance_response(reference: dict) -> PerformanceReference:
+    return PerformanceReference(
+        id=reference["id"], voice_id=reference["voice_id"], preset=reference["preset"],
+        reference_text=reference["reference_text"], duration_seconds=reference["duration_seconds"],
+        created_at=datetime.fromisoformat(reference["created_at"]),
+        preview_url=f"{settings.api_prefix}/voices/{reference['voice_id']}/performances/{reference['preset']}/preview",
     )
 
 
@@ -276,6 +292,84 @@ def preview_voice(voice_id: str) -> FileResponse:
     return FileResponse(path, media_type="audio/wav", filename=f"{voice_id}-reference.wav")
 
 
+@app.get(f"{settings.api_prefix}/voices/{{voice_id}}/performances", response_model=PerformanceReferenceList)
+def get_voice_performances(voice_id: str) -> PerformanceReferenceList:
+    if get_voice(voice_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Voice profile not found.")
+    return PerformanceReferenceList(
+        performances=[_performance_response(item) for item in list_performance_references(voice_id)]
+    )
+
+
+@app.post(f"{settings.api_prefix}/voices/{{voice_id}}/performances", response_model=PerformanceReference, status_code=status.HTTP_201_CREATED)
+def post_voice_performance(
+    voice_id: str,
+    preset: str = Form(...),
+    reference_text: str = Form(..., min_length=1, max_length=2000),
+    authorization_acknowledged: bool = Form(...),
+    file: UploadFile = File(...),
+) -> PerformanceReference:
+    if get_voice(voice_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Voice profile not found.")
+    preset = preset.strip().lower()
+    if preset not in PERFORMANCE_PRESETS:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unknown performance preset.")
+    if not authorization_acknowledged:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Confirm permission to reproduce this voice.")
+    if get_performance_reference(voice_id, preset):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"The {preset} performance already exists. Delete it before replacing it.")
+    extension = Path(file.filename or "").suffix.lower()
+    if extension not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="Unsupported audio format.")
+    performance_dir = settings.voices_dir / voice_id / "performances" / preset
+    performance_dir.mkdir(parents=True, exist_ok=False)
+    original = performance_dir / f"source{extension}"
+    processed = performance_dir / "reference.wav"
+    try:
+        with original.open("wb") as handle:
+            shutil.copyfileobj(file.file, handle)
+        if original.stat().st_size > settings.max_upload_mb * 1024 * 1024:
+            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=f"The sample must be at most {settings.max_upload_mb} MB.")
+        measured_duration = preprocess_reference([original], processed)
+        if measured_duration < 2:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="The processed performance reference is under 2 seconds.")
+        reference = create_performance_reference(
+            reference_id=uuid.uuid4().hex, voice_id=voice_id, preset=preset,
+            reference_audio_path=processed, original_sample_path=original,
+            reference_text=reference_text.strip(), duration_seconds=measured_duration,
+        )
+        engine.clear_prompt(voice_id)
+        return _performance_response(reference)
+    except HTTPException:
+        shutil.rmtree(performance_dir, ignore_errors=True)
+        raise
+    except AudioProcessingError as exc:
+        shutil.rmtree(performance_dir, ignore_errors=True)
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except Exception as exc:
+        shutil.rmtree(performance_dir, ignore_errors=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+    finally:
+        file.file.close()
+
+
+@app.get(f"{settings.api_prefix}/voices/{{voice_id}}/performances/{{preset}}/preview")
+def preview_voice_performance(voice_id: str, preset: str) -> FileResponse:
+    reference = get_performance_reference(voice_id, preset)
+    if reference is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Performance reference not found.")
+    return FileResponse(_path_for_record(reference["reference_audio_path"]), media_type="audio/wav")
+
+
+@app.delete(f"{settings.api_prefix}/voices/{{voice_id}}/performances/{{preset}}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_voice_performance(voice_id: str, preset: str) -> None:
+    reference = delete_performance_reference(voice_id, preset)
+    if reference is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Performance reference not found.")
+    engine.clear_prompt(voice_id)
+    shutil.rmtree(settings.voices_dir / voice_id / "performances" / preset, ignore_errors=True)
+
+
 @app.delete(f"{settings.api_prefix}/voices/{{voice_id}}", status_code=status.HTTP_204_NO_CONTENT)
 def remove_voice(voice_id: str) -> None:
     deleted = delete_voice(voice_id)
@@ -303,11 +397,22 @@ def synthesize(payload: GenerationRequest) -> GenerationResponse:
     if payload.engine_id != engine.engine_id:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Engine '{payload.engine_id}' is not installed.")
     spoken_text = normalize_text(payload.text.strip(), payload.pronunciation_overrides) if payload.normalize_text else payload.text.strip()
+    performance_reference = None
+    if payload.performance:
+        performance_reference = get_performance_reference(voice["id"], payload.performance)
+        if performance_reference is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"The {payload.performance} performance has no recorded reference for this voice.",
+            )
+    active_reference_audio = Path(performance_reference["reference_audio_path"]) if performance_reference else Path(voice["reference_audio_path"])
+    active_reference_text = performance_reference["reference_text"] if performance_reference else voice["reference_text"]
+    prompt_key = f"{voice['id']}:performance:{payload.performance}" if performance_reference else voice["id"]
     try:
         engine.synthesize(
-            voice_id=voice["id"],
-            reference_audio=Path(voice["reference_audio_path"]),
-            reference_text=voice["reference_text"],
+            voice_id=prompt_key,
+            reference_audio=active_reference_audio,
+            reference_text=active_reference_text,
             text=spoken_text,
             language=payload.language,
             output_path=wav_path,
@@ -352,7 +457,7 @@ def synthesize(payload: GenerationRequest) -> GenerationResponse:
                     "request_total_seconds": elapsed,
                 },
             },
-            reference_set=list(voice["original_sample_paths"]),
+            reference_set=([performance_reference["original_sample_path"]] if performance_reference else list(voice["original_sample_paths"])),
             benchmark_label=payload.benchmark_label,
         )
         return _generation_response(generation)

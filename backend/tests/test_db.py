@@ -56,3 +56,24 @@ def test_generation_benchmark_label_can_be_saved_and_updated(monkeypatch, tmp_pa
     updated = db.update_generation_label("generation", "Golden baseline · Warm text · no performance preset")
     assert updated is not None
     assert updated["benchmark_label"] == "Golden baseline · Warm text · no performance preset"
+
+
+def test_performance_reference_is_persisted_and_cascades_with_voice(monkeypatch, tmp_path: Path) -> None:
+    configure_db(monkeypatch, tmp_path)
+    db.create_voice(
+        voice_id="voice", name="Voice", reference_audio_path=tmp_path / "ref.wav",
+        original_sample_paths=[tmp_path / "source.wav"], reference_text="hello",
+        duration_seconds=4.0,
+    )
+    created = db.create_performance_reference(
+        reference_id="warm-reference", voice_id="voice", preset="warm",
+        reference_audio_path=tmp_path / "warm.wav",
+        original_sample_path=tmp_path / "warm.mp3",
+        reference_text="Come sit with me for a moment.", duration_seconds=6.0,
+    )
+    assert created["preset"] == "warm"
+    assert db.get_performance_reference("voice", "warm") == created
+
+    db.delete_voice("voice")
+
+    assert db.list_performance_references("voice") == []

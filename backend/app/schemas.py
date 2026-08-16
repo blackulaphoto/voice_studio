@@ -46,6 +46,20 @@ class VoiceCreatedResponse(BaseModel):
     message: str
 
 
+class PerformanceReference(BaseModel):
+    id: str
+    voice_id: str
+    preset: str
+    reference_text: str
+    duration_seconds: float
+    created_at: datetime
+    preview_url: str
+
+
+class PerformanceReferenceList(BaseModel):
+    performances: list[PerformanceReference]
+
+
 class GenerationRequest(BaseModel):
     voice_id: str = Field(min_length=1, max_length=100)
     text: str = Field(min_length=1, max_length=5000)
