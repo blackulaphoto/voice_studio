@@ -480,6 +480,22 @@ breathing or like synthetic hiss — set `breath` back toward 0 via the slider i
 new sentence this session (to control CPU-minutes spent before getting a reaction); regenerate
 them once the direction on Neutral/Concerned/Intimate is confirmed.
 
+### Accepted constraint: the Golden Voice reference itself is the ceiling, not the dials
+
+User discovery, same session: a new voice cloned from an Audrey Hepburn reference sample expressed
+the *same* presets/dials with far more dynamic fluctuation, pacing, pauses, and emotional range
+than the Golden Voice (`hillsry`) ever has. The user confirmed directly — no A/B test needed —
+that `hillsry`'s reference recording is flat the whole way through. **This is now an accepted
+constraint, not an open hypothesis.** Qwen3-TTS's voice-clone conditioning likely inherits some
+prosodic character from the reference recording itself, so a flat reference caps how expressive
+the clone can sound regardless of sampling parameters or post-processing dials.
+
+**Implication for future work:** do not chase more expressive range out of `hillsry` via further
+preset/dial tuning — that ceiling is accepted, not a bug to keep fixing. If more range is wanted
+later, the real lever is a richer/more dynamic Golden Voice reference recording, which is a
+materially bigger and more sensitive decision than a preset tweak (see "Preserve the Golden Voice
+QUALITY path" in Non-negotiable scope) and should only happen if the user explicitly raises it.
+
 ## Frontend architecture
 
 The UI is intentionally a single React file plus CSS. `App.jsx` owns voices, generations,
