@@ -16,11 +16,13 @@ from .audio.processing import (
     blend_breath,
     duration_seconds,
     export_mp3,
+    find_degenerate_tail_start,
     preprocess_reference,
     rescale_internal_pauses,
     shape_energy,
     time_stretch,
     trim_outer_silence,
+    truncate_at,
 )
 from .config import get_settings
 from .db import (
@@ -134,6 +136,21 @@ def _clamped_delivery_dial(settings: dict, name: str, default: float) -> float:
     return max(low, min(float(settings.get(name, default)), high))
 
 
+# Confirmed via upstream research (github.com/QwenLM/Qwen3-TTS PR #178): "without repetition
+# penalty, the model can fall into a degenerate state where it keeps sampling the same codec
+# tokens over and over" — exactly the failure mode behind the "Phase 4 follow-up 5" incidents.
+# Original/Neutral delivery previously applied zero override (the bare model default, ~1.05 —
+# the single weakest setting in this whole app). This is a small, defensive floor, not a
+# character change: every built-in preset that already sets repetition_penalty already sits at
+# or above this value except Intimate's original 1.05 (separately fixed to 1.09 after its own
+# runaway — see PERFORMANCE_PRESETS). Applied everywhere, including Original delivery and
+# Warm/Playful/Excited (which previously had no override at all); an explicit user/preset value
+# still wins. Note this technically means Original delivery's effective settings are no longer
+# literally "None" as recorded in docs/baseline.md's frozen Golden Baseline — this is a
+# perceptible-risk trade-off made deliberately, not silently; flag it if Warm sounds different.
+MIN_REPETITION_PENALTY = 1.08
+
+
 def _estimate_max_tokens(text: str) -> int:
     """Bound worst-case generation length for one engine call.
 
@@ -145,18 +162,23 @@ def _estimate_max_tokens(text: str) -> int:
     phrase-segmented synthesis introduced — it just multiplied the number of independent calls
     (and therefore independent chances of hitting it) from one to several per request.
 
-    No hard data exists yet on Qwen3-TTS's actual tokens-per-word (nothing in this codebase
-    currently logs it) — 80 tokens/word is a deliberately generous guess, favoring "never
-    truncates real speech" over "tightest possible cap": a false-truncation bug (silently
-    clipped audio) would be worse than this only partially shortening a rare runaway. Floored at
-    250 (very short phrases still need budget for natural prosody) and capped at 1800 (under
-    Qwen's own 2048 default, but with wide headroom over anything legitimate). This directly
-    bounds worst-case latency per call rather than trying to detect and recover from a runaway
-    after the fact. Revisit with real measured token counts once something in the pipeline
-    actually logs them.
+    First cap (80 tokens/word) was a blind guess and turned out to be drastically oversized: a
+    real runaway hit the 1800-token ceiling and produced ~149s of audio — only ~29s of which was
+    real speech, the rest degenerate noise/squeaks. 1800 tokens / 149s ≈ 12.08 tokens/sec, which
+    lines up almost exactly with "Qwen3-TTS-**12Hz**" — i.e. max_new_tokens counts acoustic
+    frames at the model's native 12Hz rate, not some larger multi-codebook token count. At a
+    conservative (slow) 1.6 words/sec speaking floor, that's ~7.5 tokens/word; a 2x safety
+    multiplier over that — generous headroom for slow/dramatic delivery and internal pauses,
+    without leaving room for another two minutes of garbage after real content ends — gives ~15
+    tokens/word. Floored at 200, capped at 1400 (≈117s of audio-equivalent ceiling; a legitimately
+    long paragraph can still hit this, in which case retry with shorter text). This bounds
+    worst-case latency AND worst-case garbage-tail length per call. See also the raw-duration
+    sanity check right after the engine call in synthesize() — this cap alone does not guarantee
+    clean output, only a bounded one; that check is what actually rejects a degenerate run instead
+    of silently shipping it.
     """
     words = max(1, len(text.split()))
-    return max(250, min(1800, words * 80))
+    return max(200, min(1400, round(words * 15)))
 
 
 @app.on_event("startup")
@@ -512,7 +534,7 @@ def synthesize(payload: GenerationRequest) -> GenerationResponse:
     pause_scale = _clamped_delivery_dial(merged_settings, "pause_scale", 1.0)
     energy = _clamped_delivery_dial(merged_settings, "energy", 1.0)
     breath = _clamped_delivery_dial(merged_settings, "breath", 0.0)
-    engine_settings_for_call = {**merged_settings, "_mode": payload.mode}
+    engine_settings_for_call = {"repetition_penalty": MIN_REPETITION_PENALTY, **merged_settings, "_mode": payload.mode}
     try:
         # Phase 4's phrase-segmented synthesis (separate model call per clause, reassembled with
         # constructed pauses) is DISABLED as of 2026-08-17 per direct user feedback: it produced
@@ -541,6 +563,37 @@ def synthesize(payload: GenerationRequest) -> GenerationResponse:
             settings=call_settings,
         )
         engine_timings = engine.last_timings
+        # A bounded token budget stops a degenerate run from taking forever, but does nothing to
+        # stop the garbage it produces from being shipped as if it were valid speech. Two layers:
+        #
+        # Layer 1 — detect and SALVAGE. Discovered for real (twice): a run that should have been
+        # ~20-29s of speech instead came out 88-150s, with 60-120s of quiet, spiky "noise/
+        # squeaks" appended after the real content ended, silently baked into the WAV. Plain
+        # silencedetect cannot catch this — the garbage is quiet-but-not-silent and transient,
+        # never accumulating a continuous silent run — so find_degenerate_tail_start instead
+        # tracks each window's RMS against the loudest window seen so far and looks for a
+        # sustained drop. When found, truncate right there and keep the good part instead of
+        # discarding the whole take — the user is trying to A/B-compare delivery settings and
+        # losing a otherwise-good take to a full retry is real cost, not just an inconvenience.
+        degenerate_tail_start = find_degenerate_tail_start(wav_path)
+        if degenerate_tail_start is not None:
+            truncate_at(wav_path, degenerate_tail_start)
+        # Layer 2 — backstop for shapes Layer 1 doesn't catch (e.g. loud repetition with no
+        # energy drop at all). Floor of 4.0s so very short text (with legitimate natural pause/
+        # breath padding) is never false-flagged; otherwise (word_count / 1.6 words/sec) * 2.0
+        # safety multiplier — see _estimate_max_tokens for where those numbers come from. Runs
+        # on the post-truncation duration, so a Layer-1 salvage that left a plausible amount of
+        # real content passes cleanly here.
+        raw_duration = duration_seconds(wav_path)
+        spoken_word_count = max(1, len(spoken_text.split()))
+        plausible_ceiling = max(4.0, (spoken_word_count / 1.6) * 2.0)
+        if raw_duration > plausible_ceiling:
+            raise EngineUnavailableError(
+                f"Generation produced {raw_duration:.1f}s of audio for {spoken_word_count} words "
+                f"of text (plausible ceiling {plausible_ceiling:.1f}s) — almost certainly a "
+                "degenerate run (noise or repetition after the real content ends), not valid "
+                "speech. Please try generating again."
+            )
         synthesis_finished = time.perf_counter()
         # Order matters: trim edges before pause-rescaling so every detected gap is genuinely
         # internal; rescale pauses before the uniform tempo change so pace still scales the
@@ -595,6 +648,7 @@ def synthesize(payload: GenerationRequest) -> GenerationResponse:
                 "effective_speed": effective_speed,
                 "outer_trim_seconds_removed": trimmed_seconds,
                 "pause_seconds_added": pause_seconds_added,
+                "degenerate_tail_trimmed_at_seconds": degenerate_tail_start,
                 **engine.last_effective_settings,
                 "phase_timings": {
                     **engine_timings,

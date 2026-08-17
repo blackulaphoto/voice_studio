@@ -12,9 +12,11 @@ from app.audio.processing import (
     blend_breath,
     concatenate_with_pauses,
     duration_seconds,
+    find_degenerate_tail_start,
     preprocess_reference,
     rescale_internal_pauses,
     shape_energy,
+    truncate_at,
     trim_outer_silence,
 )
 
@@ -335,3 +337,71 @@ def test_concatenate_with_pauses_single_segment_is_a_copy(tmp_path: Path) -> Non
     concatenate_with_pauses([(only, 0.5)], output)
 
     assert abs(duration_seconds(output) - 1.0) < 0.05
+
+
+def _spiky_quiet_tail(tmp_path: Path, name: str, *, loud_seconds: float = 4.0, burst_count: int = 10) -> Path:
+    """Loud "speech" segment followed by a quiet-but-not-silent, spiky "garbage" tail — the
+    real observed shape of a Qwen3-TTS degenerate run (quiet, transient noise/squeaks, not
+    continuous silence). Built from pre-rendered files per-segment: mixing an in-graph `volume`
+    filter directly into `concat` corrupts the signal via a channel-layout negotiation quirk
+    (see test_trim_outer_silence_preserves_quiet_onset's comment for the original discovery).
+    """
+    ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
+    loud = tmp_path / f"{name}-loud.wav"
+    burst = tmp_path / f"{name}-burst.wav"
+    gap = tmp_path / f"{name}-gap.wav"
+    subprocess.run(
+        [ffmpeg, "-y", "-f", "lavfi", "-i", f"sine=frequency=330:sample_rate=24000:duration={loud_seconds}", str(loud)],
+        check=True, capture_output=True,
+    )
+    subprocess.run(
+        [ffmpeg, "-y", "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=24000:duration=0.3",
+         "-af", "volume=-20dB", str(burst)],
+        check=True, capture_output=True,
+    )
+    subprocess.run(
+        [ffmpeg, "-y", "-f", "lavfi", "-i", "anullsrc=channel_layout=mono:sample_rate=24000:duration=0.3", str(gap)],
+        check=True, capture_output=True,
+    )
+    inputs = [loud] + [burst, gap] * burst_count
+    args = [ffmpeg, "-y"]
+    for item in inputs:
+        args.extend(["-i", str(item)])
+    labels = "".join(f"[{i}:a]" for i in range(len(inputs)))
+    output = tmp_path / f"{name}.wav"
+    args.extend(["-filter_complex", f"{labels}concat=n={len(inputs)}:v=0:a=1", str(output)])
+    subprocess.run(args, check=True, capture_output=True)
+    return output
+
+
+def test_find_degenerate_tail_start_detects_a_sustained_quiet_spiky_tail(tmp_path: Path) -> None:
+    source = _spiky_quiet_tail(tmp_path, "bad")
+
+    start = find_degenerate_tail_start(source)
+
+    assert start is not None
+    assert 3.0 <= start <= 5.0  # the loud segment is 4.0s
+
+
+def test_find_degenerate_tail_start_finds_nothing_on_consistent_audio(tmp_path: Path) -> None:
+    source = tmp_path / "consistent.wav"
+    subprocess.run(
+        [shutil.which("ffmpeg") or "ffmpeg", "-y", "-f", "lavfi", "-i",
+         "sine=frequency=330:sample_rate=24000:duration=10.0", str(source)],
+        check=True, capture_output=True,
+    )
+
+    assert find_degenerate_tail_start(source) is None
+
+
+def test_truncate_at_cuts_to_the_given_length(tmp_path: Path) -> None:
+    source = tmp_path / "long.wav"
+    subprocess.run(
+        [shutil.which("ffmpeg") or "ffmpeg", "-y", "-f", "lavfi", "-i",
+         "sine=frequency=330:sample_rate=24000:duration=10.0", str(source)],
+        check=True, capture_output=True,
+    )
+
+    truncate_at(source, 4.0)
+
+    assert abs(duration_seconds(source) - 4.0) < 0.1

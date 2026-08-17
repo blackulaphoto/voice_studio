@@ -734,6 +734,165 @@ banner at the top of this Phase 4 section). Fixing every measurable defect did n
 phrase-segmented synthesis sound natural — that's the actual finding to carry forward, not "try
 harder to fix the same approach."
 
+### Phase 4 follow-up 4: the 80-tokens/word cap was itself the bug — garbage tail, not a hang
+
+After reverting to single-call synthesis (see the REVERTED banner), the user ran a real paragraph
+and reported: ~29s of real speech followed by ~2 full minutes of "noises and fuzz... squeaks and
+garbage" — silently baked into the delivered WAV as if it were valid audio. The `max_new_tokens`
+cap from follow-up 1 (80 tokens/word, floor 250, ceiling 1800) did its one job — bounded wall-clock
+time, so this wasn't an infinite hang — but did nothing to stop a degenerate run from filling its
+entire token budget with noise after the real content naturally ended, and nothing downstream
+(`trim_outer_silence`, `rescale_internal_pauses`) can catch this: both only act on genuine
+*silence*, and noise/squeaks are not silent.
+
+**The cap itself was drastically miscalibrated, and this run proved it precisely.** 1800 tokens
+produced ~149s of audio ⇒ ≈12.08 tokens/second — matching "Qwen3-TTS-**12Hz**" almost exactly.
+`max_new_tokens` counts acoustic frames at the model's native 12Hz rate, not some larger
+multi-codebook count. At a conservative 1.6 words/sec speaking floor that's ~7.5 tokens/word
+needed; the old 80-tokens/word guess was ~10x that, leaving enormous headroom for a degenerate run
+to fill with garbage. Two fixes, both in `backend/app/main.py`:
+
+1. **Recalibrated `_estimate_max_tokens`**: ~15 tokens/word (2x the conservative-floor estimate,
+   still generous for slow/dramatic delivery and pauses), floored at 200, capped at 1400 (≈117s of
+   audio-equivalent — a legitimately very long paragraph can still hit this; if so, the fix is
+   shorter input text, not a higher cap).
+2. **New: a post-generation sanity check**, right after `engine.synthesize()` returns and before
+   any post-processing runs. Computes `plausible_ceiling = max(4.0, (word_count / 1.6) * 2.0)`
+   seconds and compares against the raw output's actual duration; if the raw output exceeds that,
+   raises `EngineUnavailableError` (surfaced as a 503 with an honest, specific message) instead of
+   proceeding to trim/pause-rescale/export a corrupted result. **This is the fix that actually
+   matters** — the tighter token cap reduces how much garbage a worst-case run *can* produce, but
+   only the sanity check refuses to *ship* it. Neither has been verified against a real repeat of
+   this failure yet (would need another degenerate run to occur, which is inherently
+   non-reproducible without a seed).
+
+Frontend note, unrelated bug found in the same debugging pass: a separate FastAPI validation error
+(reference transcript over 2000 characters, a plain pre-existing limit) was displaying as literal
+text "[object Object]" in the CreateVoice/PerformanceDialog/Synthesize error banners, because
+FastAPI's own validation errors return `detail` as an array of `{loc, msg, type}` objects while
+this app's own `HTTPException` calls always send a plain string, and the frontend only handled the
+string case. Fixed with a shared `errorMessage(payload)` helper in `frontend/src/App.jsx` that
+handles both shapes; also added a defensive `.slice(0, 2000)` on both transcript textareas as a
+backstop, since the exact mechanism that let a change bypass the existing HTML `maxLength="2000"`
+was not conclusively identified.
+
+### Phase 4 follow-up 5: root-cause research, and a real wall-clock timeout with process kill
+
+Following the garbage-tail incident (follow-up 4), the user asked for the root cause to actually
+be investigated — is it the voices, the delivery-control sliders, or Qwen itself — and for a real
+fix rather than continued cap-tuning.
+
+**Local data correlation.** Every persisted generation's settings and word count were pulled and
+compared. The two conclusively-degenerate runs both used the **exact same 57-word, filler-heavy
+text** ("Okay, so, like, I don't know if I'm explaining this right... they're probably not
+fucking fine.") — first on voice `hillary3`, then again on a brand-new `hillary` voice built from
+full sentences specifically to rule out a choppy-reference cause. Meanwhile that same `hillary3`
+voice succeeded cleanly on four other, different 118-word texts. This is real evidence the
+dominant trigger is **text content** (heavy filler words, a deliberately repeated word — "fine...
+fine"), not primarily voice choice or the delivery sliders; sliders varied across both good and
+bad runs with no clear pattern, and voice varied while the bad text stayed constant.
+
+**Upstream research** (WebSearch, github.com/QwenLM/Qwen3-TTS) confirmed this is a **known,
+documented Qwen3-TTS bug**, not specific to this project:
+- PR #178: *"Without repetition penalty, the model can fall into a degenerate state where it
+  keeps sampling the same codec tokens over and over"* — their fix tracks and penalizes repeated
+  first-codebook tokens.
+- Discussion #211 / Issue #318: the model can fail to emit an end-of-sequence token and loop
+  indefinitely on certain inputs, with no warning.
+- Directly relevant to this project's exact model: reported testing showed **the 0.6B Base model
+  (what this project uses) produced 106 pauses longer than 1.5s on long-form generation, vs. just
+  2 for the larger 1.7B model** — the smaller model is documented to be meaningfully worse at this.
+
+**Fix 1 — `repetition_penalty` floor.** Original/Neutral delivery previously applied zero
+override (the bare model default, ~1.05 — the single weakest setting anywhere in this app),
+exactly what PR #178 identifies as the vulnerable configuration. `MIN_REPETITION_PENALTY = 1.08`
+in `backend/app/main.py` is now applied to every generation (an explicit preset/user value still
+wins). This is a small, defensive floor, not a character change — every built-in preset already
+sat at or above it except Intimate's original 1.05, separately fixed earlier for the same reason.
+**Flagged deliberately, not silent:** this means Original delivery's effective settings are no
+longer literally "None" as recorded in `docs/baseline.md`'s frozen Golden Baseline — a
+perceptible-risk trade-off, made on purpose. Watch Warm specifically (previously user-approved)
+for any perceived character shift.
+
+**Fix 2 — the fix that actually matters: real wall-clock timeout via subprocess kill.** The
+existing `max_new_tokens` cap only bounds *token count*; on this hardware, hitting even the
+tightened cap can still take a very long time — measured directly: **1800 tokens took 1412s
+(23.5 min) of pure inference on a real runaway ⇒ ~0.785s/token.** No token cap can make a bad
+run's wait *short* on hardware this slow; only forcibly killing it can. Python cannot safely
+cancel a blocking call running in a thread, so `backend/app/tts/qwen_engine.py` was rewritten:
+all real model inference (load, prompt cache, `generate_voice_clone`) now runs in a **persistent
+child process**, communicated with via `multiprocessing` queues. `synthesize()` waits up to a
+**token-budget-proportional** timeout (`max(90s, max_new_tokens * 1.3s)` — proportional, not
+flat, so a short phrase fails fast while a legitimately long paragraph isn't killed prematurely);
+if no response arrives in time, the worker is forcibly `.kill()`ed and a fresh one is spawned for
+the next request (reloading the model once, ~15-20s — paid only when a runaway actually happens).
+The prompt cache moved into the worker process along with the model (it's meaningless without
+one); `clear_prompt`/`unload` now relay through the same queue-based protocol.
+
+Verified for real, not just by inspection: 6 new tests in `backend/tests/test_qwen_engine.py`
+using a fake worker function spawn a genuine subprocess (not mocked) and confirm round-trip
+success, that a hung request is actually killed and raises a clear error, that the *next* request
+against a freshly-respawned worker succeeds normally, and that the timeout scales correctly with
+`max_new_tokens` (including the 90s floor for short text). 46/46 tests pass. Also smoke-tested
+against the real model after restart: a real generation correctly hit the duration sanity check on
+a too-short phrase (proving the whole pipeline — spawn, load, generate, IPC, sanity check — works
+end to end), and a second real generation succeeded cleanly with `repetition_penalty: 1.08` and
+`model_load_seconds: 0.0` confirming the worker persisted across requests rather than reloading.
+
+**What this does not do:** guarantee degenerate runs stop happening — that's an upstream Qwen3-TTS
+limitation, not something fixable from this codebase. It guarantees any single bad run is bounded
+and costs at most one model reload, instead of an unbounded and possibly indefinite wait. If a
+future request still stalls for the full timeout duration, that is expected — check for the
+`EngineUnavailableError` "timed out" message in the response rather than assuming a new bug.
+
+### Phase 4 follow-up 6: the duration ceiling had a real gap — detect-and-salvage instead
+
+Follow-up 5's `plausible_ceiling` check missed a real case: a 74-word text degenerated to 88.4s
+(vs. a clean 19.29s take of the *identical* text, confirming it was garbage) but stayed just
+under that request's generous ceiling (92.5s) — a text-length-based ceiling has to stay loose to
+avoid false-flagging legitimately long paragraphs, which leaves room for a proportionally-smaller
+garbage tail to slip through on longer text undetected. The user asked directly: is testing with
+the same text repeatedly the cause? **No** — see below.
+
+**Diagnosis, from the real slipped-through file** (`storage/generations/3b7f8d66df634317a559ffb41b536188`,
+preserved for this analysis): windowed volume analysis showed clean speech-level energy
+(~-17 to -19dB) for the first ~20s, then a sharp, *sustained* drop to a quiet-but-not-silent floor
+(~-32 to -41dB) for the remaining ~68s. Plain `silencedetect` found nothing — the garbage is
+"noise/squeaks" (transient, spiky), never accumulating the continuous quiet run silencedetect
+requires. This meant duration-ratio was fundamentally the wrong tool: it can only ever be a
+backstop, not the primary defense.
+
+**Fix — `find_degenerate_tail_start` + `truncate_at`** in `backend/app/audio/processing.py`:
+tracks each 2-second window's RMS against the loudest window seen so far (a proxy for the real
+speech level) and looks for 3 consecutive windows that fall ≥12dB below that peak — a signature
+specific to a sustained *quiet* tail following real content, not a natural pause (near-silent,
+brief) and not silence (continuous). When found, the audio is **truncated right there and the
+good part is kept** — a meaningful upgrade from outright rejection, since the user is trying to
+A/B-compare delivery settings and losing an otherwise-good take to a full retry is real cost, not
+just inconvenience. The old `plausible_ceiling` check still runs afterward, now on the
+post-truncation duration, as a backstop for shapes this doesn't catch (e.g. loud repetition with
+no energy drop at all). Wired into `synthesize()` right after the raw engine call, before any
+other post-processing. Evidence persisted as `settings.degenerate_tail_trimmed_at_seconds` (null
+when nothing was trimmed).
+
+Validated twice against real data, not just synthetic fixtures: 4 new unit tests
+(`backend/tests/test_audio_processing.py`) using synthetic loud-then-spiky-quiet audio, **and**
+run directly against the real slipped-through file — correctly detected the transition at exactly
+20.0s and truncated to 20.0s, matching the clean 19.29s take of the identical text almost exactly.
+49/49 tests pass.
+
+**Answering the user's actual question — is same-text testing the cause?** No. Every piece of
+evidence points at text *content* characteristics (filler words, repeated phrasing) and the
+model's own documented instability, not at how many times a given text has been tried, and not
+primarily at voice choice (see follow-up 5's `hillary3` vs. `hillary` finding). Re-running the
+exact same text is not what causes this — each call is an independent stochastic draw with no
+memory of prior attempts. **Practical testing guidance, given this is a real, unfixable-from-here
+upstream risk on every single call:** prefer short (10-20 word), grammatically clean, non-repetitive
+test phrases for delivery-setting A/B comparisons — shorter text bounds both the risk window and
+the cost of a bad draw; avoid filler-heavy/repetitive phrasing specifically for test text if
+possible; and now, if a run does degenerate, the tail-salvage means most of the time the good
+content still comes through automatically rather than losing the whole take.
+
 ## Remaining roadmap after Phase 2
 
 Follow the production brief in order: long-form stability and intelligent segmentation;

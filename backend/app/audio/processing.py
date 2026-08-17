@@ -48,6 +48,73 @@ def duration_seconds(path: Path) -> float:
     return round(float(_probe(path).get("format", {}).get("duration", 0)), 2)
 
 
+def _rolling_rms_levels(path: Path, *, window_seconds: float) -> list[float]:
+    """RMS level (dBFS) in successive fixed windows across the whole file, one ffmpeg pass."""
+    ffmpeg = _require_ffmpeg()
+    sample_rate = int(_probe(path).get("streams", [{}])[0].get("sample_rate", 24000) or 24000)
+    window_samples = max(1, int(window_seconds * sample_rate))
+    result = subprocess.run(
+        [ffmpeg, "-hide_banner", "-nostats", "-i", str(path), "-af",
+         f"asetnsamples=n={window_samples},astats=metadata=1:reset=1,"
+         "ametadata=print:key=lavfi.astats.Overall.RMS_level",
+         "-f", "null", "NUL"],
+        capture_output=True, text=True,
+    )
+    levels: list[float] = []
+    for match in re.finditer(r"lavfi\.astats\.Overall\.RMS_level=(-?\d+(?:\.\d+)?|-inf)", result.stderr):
+        value = match.group(1)
+        levels.append(-99.0 if value == "-inf" else float(value))
+    return levels
+
+
+def find_degenerate_tail_start(
+    path: Path, *, window_seconds: float = 2.0, drop_db: float = 12.0, min_consecutive_windows: int = 3
+) -> float | None:
+    """Detect where a sustained, abnormal energy drop begins — Qwen3-TTS's documented
+    degenerate-repetition failure mode (github.com/QwenLM/Qwen3-TTS PR #178, Discussion #211)
+    tends to produce quiet, spiky "noise/squeaks" well below the real speech level, for many
+    seconds at a stretch, after otherwise-normal content. This is NOT the same as a natural
+    pause: pauses are near-silent (far below this) and brief; garbage here is quiet-but-present
+    and sustained. Crucially, plain silencedetect cannot catch it — the "noise/squeaks" pattern
+    is spiky/transient, not continuously quiet, so it never accumulates the unbroken run
+    silencedetect requires. This instead tracks each window's RMS against the loudest window
+    seen so far (a proxy for the real speech level) and looks for `min_consecutive_windows` in a
+    row that fall `drop_db` or more below that peak. Returns the timestamp (seconds) where the
+    streak began, or None if no such drop is found. Validated 2026-08-17 against a real
+    incident: correctly found the transition at 20.0s in an 88.4s clip (real content 0-20s,
+    degenerate tail 20-88.4s — confirmed by a clean 19.29s take of the identical text) and found
+    nothing in that clean take.
+    """
+    levels = _rolling_rms_levels(path, window_seconds=window_seconds)
+    if not levels:
+        return None
+    peak_so_far = levels[0]
+    consecutive = 0
+    streak_start_index: int | None = None
+    for index, level in enumerate(levels):
+        if level > peak_so_far:
+            peak_so_far = level
+        if peak_so_far - level >= drop_db and peak_so_far > -50:
+            if consecutive == 0:
+                streak_start_index = index
+            consecutive += 1
+            if consecutive >= min_consecutive_windows:
+                return streak_start_index * window_seconds
+        else:
+            consecutive = 0
+            streak_start_index = None
+    return None
+
+
+def truncate_at(wav_path: Path, cutoff_seconds: float) -> None:
+    """Cut a WAV to [0, cutoff_seconds) in place. Used to remove a detected degenerate tail
+    while keeping the real content that precedes it, rather than discarding the whole take."""
+    ffmpeg = _require_ffmpeg()
+    temporary = wav_path.with_suffix(".truncated.wav")
+    _run([ffmpeg, "-y", "-i", str(wav_path), "-t", f"{cutoff_seconds:.6f}", "-c:a", "pcm_s16le", str(temporary)])
+    temporary.replace(wav_path)
+
+
 def analyze_audio(path: Path) -> dict[str, Any]:
     """Return deterministic, local signal metadata and conservative quality guidance."""
     probe = _probe(path)
