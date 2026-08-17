@@ -38,6 +38,13 @@ function Waveform({ compact = false }) {
 function App() {
   const [page, setPage] = useState("synthesize"), [voices, setVoices] = useState([]), [generations, setGenerations] = useState([]);
   const [engines, setEngines] = useState([]), [device, setDevice] = useState(null), [selectedVoice, setSelectedVoice] = useState("");
+  // Reverted 2026-08-16: was briefly defaulted to 0.90 to address a "too fast" complaint, but
+  // the user immediately rejected that ("lowering speed just stretches the performance and
+  // makes the speaker sound sleepy/elderly... don't reduce tempo, improve phrasing/cadence
+  // instead"). atempo-based slowdown also measurably attenuates high frequencies (~10dB+ more
+  // rolloff above 4-8kHz vs. unmodified audio) — the "underwater" quality the user reported was
+  // very likely dominated by this, not by phrase-segmented synthesis. Default is 1.0 again; the
+  // real fix for pacing is segment_phrases/concatenate_with_pauses (Phase 4), not tempo.
   const [draft, setDraft] = useState({ text: "", language: "English", speed: 1, engine_id: "qwen3", mode: "quality", performance: null, seed: null, normalize_text: true, engine_settings: {} });
   const [output, setOutput] = useState(null), [loading, setLoading] = useState(true), [generating, setGenerating] = useState(false), [notice, setNotice] = useState(null), [dialog, setDialog] = useState(false);
   const [presetLibrary, setPresetLibrary] = useState({ presets: {}, bounds: {} });

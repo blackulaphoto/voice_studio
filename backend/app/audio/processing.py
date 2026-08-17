@@ -137,6 +137,59 @@ def preprocess_reference(samples: list[Path], output_path: Path) -> float:
     return duration_seconds(output_path)
 
 
+def concatenate_with_pauses(segments: list[tuple[Path, float]], output_path: Path) -> None:
+    """Concatenate WAV segments, inserting an exact true-silence gap after each one.
+
+    Each tuple is (segment_wav_path, pause_after_seconds) — the gap AFTER that segment, before
+    the next. The final segment's pause value is ignored; there is no gap after the last piece
+    (the true end of the audio is trim_outer_silence's job elsewhere in the pipeline, not an
+    inserted gap here). A pause of 0 (or the segment being last) is skipped entirely rather than
+    inserting a zero-length clip. This exists because a single generate_voice_clone call cannot
+    be trusted to leave a pause at every comma/period on its own — see segment_phrases in
+    text/segmentation.py, which this is meant to be paired with.
+    """
+    if not segments:
+        raise AudioProcessingError("At least one segment is required.")
+    ffmpeg = _require_ffmpeg()
+    if len(segments) == 1:
+        shutil.copyfile(segments[0][0], output_path)
+        return
+
+    pauses = [pause for _, pause in segments[:-1] if pause > 0]
+    total_silence_needed = sum(pauses) + 0.5
+
+    args = [ffmpeg, "-y"]
+    for wav_path, _ in segments:
+        args.extend(["-i", str(wav_path)])
+    silence_input_index = len(segments)
+    if pauses:
+        args.extend(["-f", "lavfi", "-i",
+                     f"anullsrc=channel_layout=mono:sample_rate=24000:duration={total_silence_needed:.3f}"])
+
+    filter_stages: list[str] = []
+    concat_labels: list[str] = []
+    silence_cursor = 0.0
+    for index, (_, pause) in enumerate(segments):
+        seg_label = f"sp{index}"
+        filter_stages.append(
+            f"[{index}:a]aformat=sample_fmts=fltp:sample_rates=24000:channel_layouts=mono[{seg_label}]"
+        )
+        concat_labels.append(f"[{seg_label}]")
+        is_last = index == len(segments) - 1
+        if not is_last and pause > 0:
+            silence_label = f"si{index}"
+            filter_stages.append(
+                f"[{silence_input_index}:a]atrim={silence_cursor:.6f}:{silence_cursor + pause:.6f},"
+                f"asetpts=PTS-STARTPTS[{silence_label}]"
+            )
+            concat_labels.append(f"[{silence_label}]")
+            silence_cursor += pause
+
+    filter_stages.append(f"{''.join(concat_labels)}concat=n={len(concat_labels)}:v=0:a=1[out]")
+    args.extend(["-filter_complex", ";".join(filter_stages), "-map", "[out]", "-c:a", "pcm_s16le", str(output_path)])
+    _run(args)
+
+
 def trim_outer_silence(
     wav_path: Path, *, threshold_db: float = -60.0, start_duration: float = 0.20, end_duration: float = 0.35
 ) -> float:

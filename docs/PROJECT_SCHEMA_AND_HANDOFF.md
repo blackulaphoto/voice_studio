@@ -206,7 +206,7 @@ POST /api/tts
   -> merge preset settings with request-level engine_settings overrides
   -> Qwen engine lazy-loads one model process
   -> build/reuse cached clone prompt keyed by voice/reference performance
-  -> generate_voice_clone(... supported Qwen kwargs ...)
+  -> generate_voice_clone(... supported Qwen kwargs, including a max_new_tokens safety cap ...)
   -> trim_outer_silence (edges only)
   -> rescale_internal_pauses (pause_scale dial; edges must be trimmed first)
   -> FFmpeg atempo for requested speed × preset/dial pace
@@ -217,6 +217,10 @@ POST /api/tts
   -> persist generation, exact settings, references, and phase timings
   -> return playable/downloadable API record
 ```
+
+(Phrase-segmented synthesis — split text at punctuation, one model call per phrase, reassemble
+with constructed pauses — was tried and reverted; see "Phase 4" below for why. The single-call flow
+above is current.)
 
 The Qwen model remains resident after first use. Voice prompts remain cached in memory. Complete
 local snapshots are loaded with `local_files_only=True`, preventing unnecessary Hugging Face
@@ -518,6 +522,17 @@ upload is required. An old `PerformanceDialog` component and optional CSS/backen
 still exist as hidden advanced infrastructure; remove them later if desired, but do not expose a
 required upload again.
 
+**Default speed is 0.90, not 1.0** (`App.jsx`, initial `draft` state). User feedback 2026-08-16:
+even Original/no-preset delivery at speed 1.0 — the exact value captured and approved in the
+frozen Golden Baseline (`docs/baseline.md`, left untouched as a historical record; do not edit
+it) — now sounds rushed ("running when it should be walking") once heard against longer, more
+natural sentences. Speed is a pure post-processing `atempo` tempo change (pitch-preserving, no
+identity risk), so lowering only the UI's *default starting value* is safe under the regression
+gate; the slider still reaches 1.0 and above if 0.90 undershoots. **0.90 is an unverified first
+cut** — it has not been confirmed by listening yet. If the user reports it's still too fast (or
+now too slow), adjust this single default rather than touching `pace` in any preset or the
+baseline record.
+
 `VITE_API_BASE_URL` remains configurable; default is `http://127.0.0.1:8000/api`. Assets returned
 as `/api/...` are resolved against the API origin, not the Vite origin.
 
@@ -550,9 +565,9 @@ Invoke-RestMethod http://127.0.0.1:8000/api/health
 Invoke-WebRequest http://127.0.0.1:5173 -UseBasicParsing
 ```
 
-Latest completed checks before this document: 31 tests passed, one opt-in real-Qwen test skipped;
+Latest completed checks before this document: 38 tests passed, one opt-in real-Qwen test skipped;
 `pip check` clean; Vite build passed; API healthy after backend restart; model loaded after the
-Phase 3 verification batch (Neutral/Concerned/Intimate, see evidence table above).
+Phase 4 phrase-segmentation verification generation (see evidence above).
 
 The real integration test is intentionally opt-in because CPU synthesis takes minutes. Use the
 existing voice and persisted benchmark harnesses rather than launching duplicate model workers.
@@ -567,6 +582,157 @@ existing voice and persisted benchmark harnesses rather than launching duplicate
   reports sandbox ownership:
   `git -c safe.directory=C:/Users/brandon/Downloads/Athena-Voice-Studio/athena-voice-studio push origin main`
 - GitHub CLI API auth was stale, but normal Git credential push worked.
+
+## Phase 4: phrase-segmented synthesis for natural cadence — REVERTED, DO NOT RE-ENABLE WITHOUT ASKING
+
+**Status as of 2026-08-17: reverted at the user's explicit request.** `synthesize()` in
+`backend/app/main.py` is back to plain single-call synthesis (matching Phase 3 exactly, plus the
+independently-useful `max_new_tokens` cap — see the follow-up section below). The
+`segment_phrases`/`concatenate_with_pauses`/`_cap_segment_count` machinery described below still
+exists in `backend/app/text/segmentation.py` and `backend/app/audio/processing.py`, is still unit
+tested, but is **not called from any live endpoint**. Do not wire it back in without the user
+asking — read this whole section first so you don't repeat the same three bugs.
+
+**Why it was reverted, in the user's own words after listening to two different fixed-up
+attempts:** "the first one has a 5 second pause between each phrase, the second one treats every
+phrase as a new sentence so it doesn't sound like a natural conversation... just switch it back to
+how it was when it was running over itself. we will figure this out later." Every individual bug
+found along the way (see below) got fixed correctly, and the *mechanism still didn't produce
+natural-sounding speech* — phrase-by-phrase independent synthesis, even bug-free, apparently reads
+as disconnected/sentence-like rather than conversational, and pause durations tuned to sound right
+in isolation read as dead air in context. This is a fundamentally different problem from the bugs;
+fixing the bugs did not fix it. The original "words run together" complaint is back, by choice,
+until a better approach is found — do not treat that as unfinished/needing another patch pass
+without the user raising it again.
+
+**Original context below, preserved as-is for whoever revisits this:**
+
+User feedback 2026-08-16/17, on a plain Original-delivery test synth (no preset involved): "the
+model runs words together, clips pauses between phrases, and begins the next thought before the
+previous one has naturally landed... someone excitedly talking over themselves." Explicitly not a
+tempo complaint — lowering the default speed to 0.90 (**reverted back to 1.0, see the follow-up
+section below — this was itself a bug, not a kept change**)
+did not address it, and the user was clear: don't reduce tempo further, fix phrasing/cadence
+directly, keeping the same energy/pitch/personality.
+
+**Root cause:** a single `generate_voice_clone` call has no guarantee of leaving an audible gap at
+any given comma or period — Phase 3's `pause_scale`/`rescale_internal_pauses` can only rescale a
+gap that already exists in the raw output; it cannot create one where the model left none. That's
+exactly what was happening on plain Original delivery.
+
+**Fix — phrase-segmented synthesis**, implemented across three files:
+
+- `segment_phrases()` in `backend/app/text/segmentation.py`: splits text at every sentence ending
+  (`.!?`) and clause boundary (`,;:—...`), pairing each phrase with a punctuation-weighted pause
+  (sentence 0.38s, clause 0.28s, comma 0.18s, ellipsis 0.32s — pre-pace "at rest" values). Fragments
+  shorter than 3 words are folded into the next segment (a lone "Brandon," synthesized alone tends
+  to come out with clipped, unnatural intonation, and is one more full model call for no benefit).
+  Distinct from the pre-existing `segment_text()` (long-form ~420-char chunking for a different,
+  not-yet-wired future feature) — do not conflate the two.
+- `concatenate_with_pauses()` in `backend/app/audio/processing.py`: joins WAV segments with an
+  exact true-silence gap after each one (last segment's pause is always dropped — the true end is
+  `trim_outer_silence`'s job).
+- `synthesize()` in `backend/app/main.py`: when `segment_phrases` returns more than one phrase, each
+  is synthesized **separately** through `engine.synthesize` — same cached voice-clone prompt, same
+  sampling settings every call, so energy/pitch/personality stay consistent across phrases — tightly
+  edge-trimmed individually (`trim_outer_silence(..., start_duration=0.10, end_duration=0.10)`, same
+  `start_silence=start_duration` fix as everywhere else), then reassembled with
+  `concatenate_with_pauses`, with each pause additionally scaled by the `pause_scale` delivery dial.
+  Plain single-phrase text (no punctuation at all) falls back to the original one-call path plus
+  `rescale_internal_pauses`, unchanged. Per-segment `engine.last_timings` are summed for honest
+  evidence; `phrase_segment_count` and `pause_seconds_added` are persisted on every generation.
+
+This also makes `pause_scale` meaningfully reliable for the first time — previously it rescaled
+whatever raw gap Qwen happened to leave (sometimes nothing); now it scales a real, guaranteed gap
+at every major phrase boundary.
+
+**Verification** (technical only — not a listening judgment, which is the user's call, not mine):
+generation `fe64b683004840ada823e2a62a2c3005`, Original delivery, `hillsry`, the standard Phase 3
+evaluation sentence, speed 0.90, 5 phrase segments from 4 boundaries (em-dash, comma, period,
+question mark; the ellipsis before the final clause landed inside a merged segment, see below).
+292.1s total (5 separate model calls) vs. ~236s for the single-call Phase 3 Neutral baseline on the
+same sentence — a real but modest cost increase, not a multiplication. `silencedetect` at -45dB
+found exactly the 4 constructed gaps at their expected positions and durations (post-0.90-speed-
+stretch): ~0.30s (em-dash, expected 0.31), ~0.18s (comma, expected 0.20), ~0.47s (period, expected
+0.42), ~0.46s (question mark, expected 0.42) — plus a 5th, smaller (0.17s) *natural* gap inside the
+final merged segment ("Because this... this actually matters." — the short "Because this..."
+fragment got folded into the next clause by the min-3-word merge rule, so that internal ellipsis
+pause is whatever the model did on its own, not one we constructed). Peak-level envelope at all 4
+constructed boundaries shows a smooth quiet-to-full ramp over ~60-100ms — consistent with intact
+word onsets, not a clipped consonant landing straight into a loud vowel. `pause_seconds_added`
+(1.22s pre-stretch) matched the sum of the four punctuation weights exactly (0.28+0.18+0.38+0.38).
+
+**Not yet regenerated with this fix:** any Phase 2/3 preset takes. The user should test a fresh
+Original-delivery synth first and confirm the cadence actually reads as natural before presets get
+re-evaluated on top of it — the phrase-segmentation mechanism is new and this is its first real
+output.
+
+### Phase 4 follow-up: unbounded runaway hit for real, within the hour
+
+While the user was testing the fix above, a plain Original-delivery generation stalled for 11+
+minutes — confirmed via the generation directory (`storage/generations/<id>/segment-N.wav` files
+stopped appearing after segment 3, while the backend process was still actively burning CPU, not
+hung/frozen). Same degenerate-repeat-loop failure mode as the earlier Intimate/Concerned incidents,
+except this was never actually bounded: Qwen's own `max_new_tokens` default is 2048, and on CPU
+that can take many minutes to exhaust even when the extra tokens are pure repetition. **This
+vulnerability was not new to Phase 4** — every single-call generation since Phase 0 carried it —
+Phase 4 just multiplied the number of independent per-request engine calls (5, for that test
+sentence), proportionally multiplying the chance that at least one of them hits it.
+
+**Fix:** `max_new_tokens` is now forwarded to Qwen (added to the allowlist in
+`_generation_kwargs`, `backend/app/tts/qwen_engine.py`) and every `engine.synthesize` call —
+phrase-segmented or single-call fallback — now passes an explicit per-call budget via
+`_estimate_max_tokens(text)` in `backend/app/main.py`: `max(250, min(1800, word_count * 80))`.
+**This heuristic is an unverified guess** — nothing in the pipeline currently logs Qwen's actual
+token counts, so 80 tokens/word is deliberately generous (favoring "never truncates real speech"
+over "tightest possible cap"); a false-truncation bug would be worse than only partially shortening
+a rare runaway. If a future take sounds abruptly cut off rather than clipped-but-complete, this
+cap is the first thing to check — loosen the multiplier/floor/ceiling rather than assume it's
+unrelated. Revisit with real measured token counts once something logs them. The stuck generation's
+partial files were deleted and the backend restarted; this fix was not yet re-verified with a real
+end-to-end generation before being handed back to the user (they were actively blocked and waiting).
+
+### Phase 4 follow-up 2: long text still isn't safe (segment count cap)
+
+Separately, a *different* Original-delivery generation with longer input text produced 14+ phrase
+segments and ran 10+ minutes — confirmed genuinely progressing (not stuck) via steadily-appearing
+`segment-N.wav` files, roughly one per minute. Each phrase segment costs one full sequential CPU
+inference call, so long text turned into a very long wait even with nothing broken. Fixed with
+`_cap_segment_count` in `backend/app/text/segmentation.py`: merges adjacent segments (preferring to
+merge away the *smallest* pause boundary first) until the count is at or below `max_segments=8`.
+Tested (`test_segment_phrases_caps_segment_count_on_long_text`,
+`test_segment_phrases_respects_custom_max_segments`). This is a stopgap, not a real long-form
+solution — moot now that phrase-segmentation is reverted, but the cap logic is sound if revisited.
+
+### Phase 4 follow-up 3: underwater sound, then internal-silence bloat — then the actual verdict
+
+Two further bugs were found and fixed via direct measurement (ffprobe/volumedetect/silencedetect,
+not by ear) before the user could get a clean listen at all:
+
+1. **"Underwater," sleepy-sounding audio.** Root cause: the 0.90 default speed from the earlier
+   pacing complaint (see the "reduced to 0.90" note above) was never reverted after the user
+   explicitly rejected tempo reduction as an approach — phrase-segmented takes were still going
+   through `atempo` at 0.9. Measured directly: high-frequency content ~11dB more attenuated
+   relative to overall level than an unmodified baseline (a known WSOLA time-stretch artifact,
+   consistent with "underwater"). Fixed: default speed reverted to 1.0 in `frontend/src/App.jsx`
+   (see Frontend architecture).
+2. **Internal silence bloat within a single phrase segment.** Even after the tempo bug was fixed,
+   one verification take came out at 18.8s for a sentence that should run ~10s, with
+   `silencedetect` showing a 3.8-second dead patch and a dozen+ small extra gaps that weren't part
+   of the constructed boundary pauses — a bad stochastic draw inside one segment's own short
+   phrase, bounded in wall-clock time by the new `max_new_tokens` cap but not prevented from being
+   *qualitatively* bloated with dead air within that budget. Mitigated by aggressively compressing
+   any internal gap found *inside* an individual phrase segment before concatenation
+   (`rescale_internal_pauses(segment_path, pause_scale=0.25, ...)`) — a short phrase has no
+   legitimate reason to contain its own dramatic pause, unlike a full sentence.
+
+With both of those fixed, a third verification take came out clean by every measurement available
+(spectral profile matched the healthy baseline, only 6 reasonable-duration gaps, sane 11.3s total
+duration) — generation `81814703e3684761b86f85e4be745acb`. **This is the one the user actually
+listened to**, and the verdict was the mechanism itself, not a remaining bug (see the REVERTED
+banner at the top of this Phase 4 section). Fixing every measurable defect did not make
+phrase-segmented synthesis sound natural — that's the actual finding to carry forward, not "try
+harder to fix the same approach."
 
 ## Remaining roadmap after Phase 2
 

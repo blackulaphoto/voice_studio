@@ -134,6 +134,31 @@ def _clamped_delivery_dial(settings: dict, name: str, default: float) -> float:
     return max(low, min(float(settings.get(name, default)), high))
 
 
+def _estimate_max_tokens(text: str) -> int:
+    """Bound worst-case generation length for one engine call.
+
+    2026-08-16/17: a plain Original-delivery generation stalled for 11+ minutes with no crash —
+    a degenerate repeat-loop (same failure mode as the earlier Intimate/Concerned incidents),
+    except this one was never actually bounded: Qwen's own max_new_tokens default is 2048, which
+    on CPU can take many minutes to exhaust even when the extra tokens are pure repetition. This
+    was always a latent risk on every single-call generation, not something Phase 4's
+    phrase-segmented synthesis introduced — it just multiplied the number of independent calls
+    (and therefore independent chances of hitting it) from one to several per request.
+
+    No hard data exists yet on Qwen3-TTS's actual tokens-per-word (nothing in this codebase
+    currently logs it) — 80 tokens/word is a deliberately generous guess, favoring "never
+    truncates real speech" over "tightest possible cap": a false-truncation bug (silently
+    clipped audio) would be worse than this only partially shortening a rare runaway. Floored at
+    250 (very short phrases still need budget for natural prosody) and capped at 1800 (under
+    Qwen's own 2048 default, but with wide headroom over anything legitimate). This directly
+    bounds worst-case latency per call rather than trying to detect and recover from a runaway
+    after the fact. Revisit with real measured token counts once something in the pipeline
+    actually logs them.
+    """
+    words = max(1, len(text.split()))
+    return max(250, min(1800, words * 80))
+
+
 @app.on_event("startup")
 def startup() -> None:
     init_db()
@@ -487,7 +512,25 @@ def synthesize(payload: GenerationRequest) -> GenerationResponse:
     pause_scale = _clamped_delivery_dial(merged_settings, "pause_scale", 1.0)
     energy = _clamped_delivery_dial(merged_settings, "energy", 1.0)
     breath = _clamped_delivery_dial(merged_settings, "breath", 0.0)
+    engine_settings_for_call = {**merged_settings, "_mode": payload.mode}
     try:
+        # Phase 4's phrase-segmented synthesis (separate model call per clause, reassembled with
+        # constructed pauses) is DISABLED as of 2026-08-17 per direct user feedback: it produced
+        # unnatural results (5-second dead gaps between phrases in one attempt, every phrase
+        # reading as a new, disconnected sentence rather than a continuous conversational line in
+        # another) even after fixing the bugs found along the way (tempo-artifact "underwater"
+        # sound, unbounded per-call runaway, internal silence bloat within a segment). Reverted to
+        # single-call synthesis — the original "words run together" complaint this was meant to
+        # fix is back, by the user's explicit choice, until a better approach is found. The
+        # segment_phrases/concatenate_with_pauses machinery (text/segmentation.py,
+        # audio/processing.py) is left in place, tested, and unused — do not wire it back into
+        # this endpoint without the user asking; read the Phase 4 section in
+        # PROJECT_SCHEMA_AND_HANDOFF.md first for exactly what went wrong.
+        #
+        # max_new_tokens IS kept from that work — it's a real, independent bug fix (an unbounded
+        # single call can still run away in wall-clock time; this was true since Phase 0, not
+        # something Phase 4 introduced) and has nothing to do with the phrasing/cadence problem.
+        call_settings = {"max_new_tokens": _estimate_max_tokens(spoken_text), **engine_settings_for_call}
         engine.synthesize(
             voice_id=prompt_key,
             reference_audio=active_reference_audio,
@@ -495,8 +538,9 @@ def synthesize(payload: GenerationRequest) -> GenerationResponse:
             text=spoken_text,
             language=payload.language,
             output_path=wav_path,
-            settings={**merged_settings, "_mode": payload.mode},
+            settings=call_settings,
         )
+        engine_timings = engine.last_timings
         synthesis_finished = time.perf_counter()
         # Order matters: trim edges before pause-rescaling so every detected gap is genuinely
         # internal; rescale pauses before the uniform tempo change so pace still scales the
@@ -553,7 +597,7 @@ def synthesize(payload: GenerationRequest) -> GenerationResponse:
                 "pause_seconds_added": pause_seconds_added,
                 **engine.last_effective_settings,
                 "phase_timings": {
-                    **engine.last_timings,
+                    **engine_timings,
                     "outer_trim_seconds": round(trim_finished - synthesis_finished, 3),
                     "pause_rescale_seconds": round(pause_finished - trim_finished, 3),
                     "post_speed_seconds": round(stretch_finished - pause_finished, 3),

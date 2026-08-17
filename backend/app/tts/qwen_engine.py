@@ -101,7 +101,7 @@ class QwenVoiceCloneEngine(TTSEngine):
         kwargs = {"non_streaming_mode": True} if mode == "fast" else {}
         for name in (
             "temperature", "top_k", "top_p", "repetition_penalty",
-            "subtalker_temperature", "subtalker_top_k", "subtalker_top_p",
+            "subtalker_temperature", "subtalker_top_k", "subtalker_top_p", "max_new_tokens",
         ):
             if name in settings:
                 kwargs[name] = settings[name]

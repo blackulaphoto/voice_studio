@@ -10,6 +10,7 @@ from app.audio.processing import (
     AudioProcessingError,
     analyze_audio,
     blend_breath,
+    concatenate_with_pauses,
     duration_seconds,
     preprocess_reference,
     rescale_internal_pauses,
@@ -291,3 +292,46 @@ def test_blend_breath_raises_noise_floor_during_the_gap(tmp_path: Path) -> None:
     # measurably carry the breath noise bed.
     assert abs(after - 3.0) < 0.2
     assert after_level > before_level + 10
+
+
+def _tone(tmp_path: Path, name: str, *, frequency: int = 330, duration: float = 1.0) -> Path:
+    path = tmp_path / name
+    subprocess.run(
+        [
+            shutil.which("ffmpeg") or "ffmpeg", "-y", "-f", "lavfi", "-i",
+            f"sine=frequency={frequency}:sample_rate=24000:duration={duration}", str(path),
+        ],
+        check=True, capture_output=True,
+    )
+    return path
+
+
+def test_concatenate_with_pauses_inserts_exact_gaps(tmp_path: Path) -> None:
+    first = _tone(tmp_path, "first.wav", frequency=330, duration=1.0)
+    second = _tone(tmp_path, "second.wav", frequency=440, duration=1.0)
+    third = _tone(tmp_path, "third.wav", frequency=550, duration=1.0)
+    output = tmp_path / "combined.wav"
+
+    concatenate_with_pauses([(first, 0.5), (second, 0.8), (third, 0.0)], output)
+
+    # 3.0s of speech + 1.3s of inserted gaps; the last segment's pause value must be ignored.
+    assert 4.1 <= duration_seconds(output) <= 4.5
+
+
+def test_concatenate_with_pauses_skips_zero_gaps(tmp_path: Path) -> None:
+    first = _tone(tmp_path, "first.wav", duration=1.0)
+    second = _tone(tmp_path, "second.wav", duration=1.0)
+    output = tmp_path / "combined.wav"
+
+    concatenate_with_pauses([(first, 0.0), (second, 0.0)], output)
+
+    assert 1.8 <= duration_seconds(output) <= 2.2
+
+
+def test_concatenate_with_pauses_single_segment_is_a_copy(tmp_path: Path) -> None:
+    only = _tone(tmp_path, "only.wav", duration=1.0)
+    output = tmp_path / "combined.wav"
+
+    concatenate_with_pauses([(only, 0.5)], output)
+
+    assert abs(duration_seconds(output) - 1.0) < 0.05
